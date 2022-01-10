@@ -3,7 +3,7 @@ use std::{ops::Add, rc::Rc};
 use int_enum::IntEnumError;
 use thiserror::Error;
 
-use crate::function::{Function, OpCode};
+use crate::function::{Function, OpCode, DValue};
 
 #[derive(Debug, Error)]
 pub enum DecompileError {
@@ -13,10 +13,17 @@ pub enum DecompileError {
     UnexpectedEnd,
 }
 
+pub enum Tail {
+    None,
+    Return,
+}
+
 // Graph node
 pub struct Node {
     offset: usize,
     last_offset: usize,
+    ir: Vec<Rc<DValue>>,
+    tail: Tail,
 }
 
 pub struct FunctionContext {
@@ -49,7 +56,8 @@ impl FunctionContext {
         Ok(())
     }
 
-    pub fn analyze_branches(&mut self, func: &Rc<Function>) -> Result<(), DecompileError> {
+    fn analyze_branches(&mut self) -> Result<(), DecompileError> {
+        let func = self.func.clone();
         let mut iter = func.code.iter().enumerate().peekable();
         while let Some((offset, i)) = iter.next() {
             match i.opcode()? {
@@ -61,7 +69,7 @@ impl FunctionContext {
                 | OpCode::TForLoop => {
                     let (_, next) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
                     let target = next.argsbx() as usize + offset + 2;
-                    if target >= func.code.len() {
+                    if target >= self.func.code.len() {
                         return Err(DecompileError::UnexpectedEnd);
                     }
                     self.add_branch(offset, target)?;
@@ -106,8 +114,10 @@ impl FunctionContext {
     }
 }
 
-pub fn decompile(func: &Rc<Function>) -> Result<(), DecompileError> {
+pub fn decompile(func: Rc<Function>) -> Result<(), DecompileError> {
     // Generate
+    let mut ctx = FunctionContext::new(func);
+    ctx.analyze_branches();
 
     //let ctx = FunctionContext { func };
 

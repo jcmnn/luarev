@@ -359,7 +359,7 @@ fn load_closures<R: Read>(rdr: &mut R) -> IoResult<Vec<Rc<Function>>> {
 fn load_debug<R: Read>(mut rdr: R) -> IoResult<()> {
     let lineinfo_size = rdr.read_varint()? as usize;
     let _lineinfo = (0..lineinfo_size)
-        .map(|i| rdr.read_uinteger())
+        .map(|_| rdr.read_uinteger())
         .collect::<IoResult<Vec<u32>>>()?;
     // Read local variables
     for _ in 0..rdr.read_varint()? {
