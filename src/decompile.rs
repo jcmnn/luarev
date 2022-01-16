@@ -21,9 +21,20 @@ pub enum Tail {
 // Graph node
 pub struct Node {
     offset: usize,
-    last_offset: usize,
     ir: Vec<Rc<DValue>>,
     tail: Tail,
+}
+
+impl Node {
+    fn new(offset: usize) -> Node {
+        Node {
+            offset,
+            ir: Vec::new(),
+            tail: Tail::None,
+        }
+    }
+
+    fn 
 }
 
 pub struct FunctionContext {
@@ -34,7 +45,7 @@ pub struct FunctionContext {
 }
 
 impl FunctionContext {
-    pub fn new(func: Rc<Function>) -> FunctionContext {
+    fn new(func: Rc<Function>) -> FunctionContext {
         let branches = vec![Vec::new(); func.code.len()];
         let references = vec![Vec::new(); func.code.len()];
         FunctionContext {
@@ -117,7 +128,9 @@ impl FunctionContext {
 pub fn decompile(func: Rc<Function>) -> Result<(), DecompileError> {
     // Generate
     let mut ctx = FunctionContext::new(func);
-    ctx.analyze_branches();
+    ctx.analyze_branches()?;
+
+
 
     //let ctx = FunctionContext { func };
 
