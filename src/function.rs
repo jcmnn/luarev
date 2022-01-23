@@ -116,6 +116,12 @@ impl Instruction {
     pub fn argsbx(&self) -> i32 {
         (self.argbx() as i32) - 0x3FFFF
     }
+
+    pub fn number(&self) -> f32 {
+        let b = self.argbx() << 14;
+        let bytes: [u8; 4] = b.to_be_bytes();
+        f32::from_be_bytes(bytes)
+    }
 }
 
 impl Display for Instruction {
@@ -277,7 +283,7 @@ impl Display for Instruction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Constant {
     Nil,
     Boolean(u32),
@@ -302,6 +308,15 @@ pub enum Value {
     UpValue,
     Param,
     Closure(usize),
+    Div(Rc<DValue>, Rc<DValue>),
+    Mod(Rc<DValue>, Rc<DValue>),
+    Add(Rc<DValue>, Rc<DValue>),
+    Sub(Rc<DValue>, Rc<DValue>),
+    Mul(Rc<DValue>, Rc<DValue>),
+    Pow(Rc<DValue>, Rc<DValue>),
+    Number(f32),
+    Concat(Vec<Rc<DValue>>),
+    TableValue(Rc<DValue>, Rc<DValue>),
     Unknown(usize),
 }
 

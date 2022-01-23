@@ -13,19 +13,25 @@ pub enum DecompileError {
     UnexpectedEnd,
     #[error("invalid upvalue")]
     InvalidUpvalue,
+    #[error("expected JMP instruction after branch")]
+    ExpectedJmp,
+}
+
+pub struct Branch {
+    left: Rc<DValue>,
+    right: Rc<DValue>,
+    direction: bool,
+    target_1: usize,
+    target_2: usize,
 }
 
 pub enum Tail {
     None,
     Return,
     TailCall(Rc<DValue>, Vec<Rc<DValue>>),
-    Eq {
-        left: Rc<DValue>,
-        right: Rc<DValue>,
-        direciton: bool,
-        target_1: usize,
-        target_2: usize,
-    },
+    Eq(Branch),
+    Le(Branch),
+    Lt(Branch),
 }
 
 pub struct NodeStack {
@@ -64,6 +70,16 @@ pub struct Node {
     tail: Tail,
 }
 
+// Returns true if encoded value contains a constant index
+const fn isk(x: u32) -> bool {
+    (x & (1 << 8)) != 0
+}
+
+// Returns constant index from encoded value
+const fn indexk(x: u32) -> usize {
+    (x & !(1 << 8)) as usize
+}
+
 impl Node {
     fn new(offset: usize) -> Node {
         Node {
@@ -74,13 +90,51 @@ impl Node {
         }
     }
 
+    // Returns value on stack or constant from encoded value
+    fn stack_or_const(&mut self, r: u32, ctx: &FunctionContext) -> Rc<DValue> {
+        if isk(r) {
+            return self.make_value(Value::Constant(ctx.func.constants[indexk(r)].clone()));
+        }
+
+        self.stack.get(r as usize).clone()
+    }
+
+    fn make_value(&mut self, value: Value) -> Rc<DValue> {
+        let dv = Rc::new(DValue::new(value));
+        self.ir.push(dv.clone());
+        dv
+    }
+
+    // Adds instructions to graph node
     fn add_code(
         &mut self,
         ctx: &mut FunctionContext,
+        offset: usize,
         code: &[Instruction],
     ) -> Result<(), DecompileError> {
-        let mut iter = code.iter();
-        while let Some(i) = iter.next() {
+        let mut iter = code.iter().enumerate().map(|(coff, i)| (coff + offset, i));
+        while let Some((coff, i)) = iter.next() {
+            // Decode conditional branch instruction
+            let mut decode_conditional = || {
+                let left = self.stack_or_const(i.argb(), ctx);
+                let right = self.stack_or_const(i.argc(), ctx);
+
+                let (_, ijmp) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
+                if ijmp.opcode()? != OpCode::Jmp {
+                    return Err(DecompileError::ExpectedJmp);
+                }
+
+                let target = coff as i32 + ijmp.argsbx() + 2;
+                Ok(Branch {
+                    left,
+                    right,
+                    direction: i.arga() == 0,
+                    target_1: coff + 2,
+                    target_2: target as usize,
+                })
+            };
+
+            // Decode instruction
             match i.opcode()? {
                 OpCode::TailCall => {
                     let ra = i.arga() as i32;
@@ -103,7 +157,7 @@ impl Node {
                     }
                     let closure = &ctx.func.closures[bx];
                     for up in closure.upvalues.iter() {
-                        let upi = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
+                        let (_, upi) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
                         let val = match upi.opcode()? {
                             OpCode::GetUpval => ctx.func.upvalues[upi.argb() as usize].clone(),
                             OpCode::Move => self.stack.get(upi.argb() as usize),
@@ -115,18 +169,45 @@ impl Node {
                         }
                         up.name.replace((*val.name.borrow()).clone());
                     }
-                    let val = Rc::new(DValue::new(Value::Closure(bx)));
+                    let val = self.make_value(Value::Closure(bx));
                     self.stack.set(i.arga() as usize, val.clone());
                     self.ir.push(val);
                 }
                 OpCode::Eq => {
-                    
+                    self.tail = Tail::Eq(decode_conditional()?);
                 }
-                OpCode::Div => todo!(),
-                OpCode::GetNum => todo!(),
-                OpCode::Concat => todo!(),
-                OpCode::GetTable => todo!(),
-                OpCode::SetList => todo!(),
+                OpCode::Div => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    let val = self.make_value(Value::Div(left, right));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::GetNum => {
+                    let val = self.make_value(Value::Number(i.number()));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::Concat => {
+                    let b = i.argb();
+                    let c = i.argc();
+
+                    let params: Vec<Rc<DValue>> =
+                        (b..=c).map(|x| self.stack.get(x as usize)).collect();
+
+                    let val = self.make_value(Value::Concat(params));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::GetTable => {
+                    let table = self.stack.get(i.argb() as usize);
+                    let key = self.stack_or_const(i.argc(), ctx);
+                    let val = self.make_value(Value::TableValue(table, key));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::SetList => {
+                    let n = i.argb();
+                    let b = i.argc();
+
+                    todo!()
+                }
                 OpCode::LoadK => todo!(),
                 OpCode::SetGlobal => todo!(),
                 OpCode::Jmp => todo!(),
@@ -135,25 +216,49 @@ impl Node {
                 OpCode::Not => todo!(),
                 OpCode::Vararg => todo!(),
                 OpCode::GetUpval => todo!(),
-                OpCode::Add => todo!(),
+                OpCode::Add => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    let val = self.make_value(Value::Add(left, right));
+                    self.stack.set(i.arga() as usize, val);
+                }
                 OpCode::Return => todo!(),
                 OpCode::GetGlobal => todo!(),
                 OpCode::Len => todo!(),
-                OpCode::Mul => todo!(),
+                OpCode::Mul => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    let val = self.make_value(Value::Mul(left, right));
+                    self.stack.set(i.arga() as usize, val);
+                }
                 OpCode::NewTable => todo!(),
                 OpCode::TestSet => todo!(),
                 OpCode::SetTable => todo!(),
                 OpCode::Unm => todo!(),
-                OpCode::Mod => todo!(),
-                OpCode::Lt => todo!(),
+                OpCode::Mod => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    let val = self.make_value(Value::Mod(left, right));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::Lt => {
+                    self.tail = Tail::Lt(decode_conditional()?);
+                }
                 OpCode::ForLoop => todo!(),
                 OpCode::Call => todo!(),
-                OpCode::Le => todo!(),
+                OpCode::Le => {
+                    self.tail = Tail::Le(decode_conditional()?);
+                }
                 OpCode::LoadBool => todo!(),
                 OpCode::ForPrep => todo!(),
                 OpCode::SetCGlobal => todo!(),
                 OpCode::Test => todo!(),
-                OpCode::Pow => todo!(),
+                OpCode::Pow => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    let val = self.make_value(Value::Pow(left, right));
+                    self.stack.set(i.arga() as usize, val);
+                }
                 OpCode::OpSelf => todo!(),
                 OpCode::Sub => todo!(),
                 OpCode::Move => todo!(),
