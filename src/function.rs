@@ -89,6 +89,10 @@ impl Instruction {
         OpCode::from_int(self.0 & 0x3F)
     }
 
+    pub fn raw(&self) -> u32 {
+        self.0
+    }
+
     pub fn arga(&self) -> u32 {
         (self.0 >> 6) & 0xFF
     }
@@ -307,6 +311,7 @@ pub enum Value {
     Constant(Constant),
     UpValue,
     Param,
+    VarArg,
     Closure(usize),
     Div(Rc<DValue>, Rc<DValue>),
     Mod(Rc<DValue>, Rc<DValue>),
@@ -317,6 +322,7 @@ pub enum Value {
     Number(f32),
     Concat(Vec<Rc<DValue>>),
     TableValue(Rc<DValue>, Rc<DValue>),
+    NewTable(RefCell<Vec<Option<Rc<DValue>>>>),
     Unknown(usize),
 }
 

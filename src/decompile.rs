@@ -15,6 +15,8 @@ pub enum DecompileError {
     InvalidUpvalue,
     #[error("expected JMP instruction after branch")]
     ExpectedJmp,
+    #[error("expected NewTable in SETLIST instruction")]
+    ExpectedTable,
 }
 
 pub struct Branch {
@@ -204,9 +206,40 @@ impl Node {
                 }
                 OpCode::SetList => {
                     let n = i.argb();
-                    let b = i.argc();
+                    let c = match i.argc() {
+                        0 => {
+                            let (_, nexti) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
+                            nexti.raw()
+                        }
+                        c => c,
+                    };
 
-                    todo!()
+                    let ra = self.stack.get(i.arga() as usize);
+                    let mut items = match &ra.value {
+                        Value::NewTable(items) => items.borrow_mut(),
+                        _ => return Err(DecompileError::ExpectedTable),
+                    };
+                    let mut last = (((c - 1) * 50) + n) as usize;
+
+                    if n == 0 {
+                        // Vararg
+                        if last >= items.len() {
+                            items.resize(last + 1, None);
+                        }
+                        items[last] = Some(Rc::new(DValue::new(Value::VarArg)));
+                        continue;
+                    }
+
+                    // Resize table if needed
+                    if last > items.len() {
+                        items.resize(last + 1, None);
+                    }
+
+                    for idx in n..0 {
+                        let val = self.stack.get((i.arga() + idx) as usize);
+                        items[last] = Some(val);
+                        last -= 1;
+                    }
                 }
                 OpCode::LoadK => todo!(),
                 OpCode::SetGlobal => todo!(),
