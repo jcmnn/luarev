@@ -322,7 +322,17 @@ pub enum Value {
     Number(f32),
     Concat(Vec<Rc<DValue>>),
     TableValue(Rc<DValue>, Rc<DValue>),
+    SetTable(Rc<DValue>, Rc<DValue>, Rc<DValue>),
+    ForIndex,
     NewTable(RefCell<Vec<Option<Rc<DValue>>>>),
+    SetGlobal(Constant, Rc<DValue>),
+    ReturnValue,
+    Call(Rc<DValue>, Vec<Rc<DValue>>),
+    SetUpValue(usize, Rc<DValue>),
+    Not(Rc<DValue>),
+    GetGlobal(Constant),
+    Len(Rc<DValue>),
+    Unm(Rc<DValue>),
     Unknown(usize),
 }
 

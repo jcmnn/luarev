@@ -1,4 +1,8 @@
-use std::{cell::Cell, ops::Add, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Add,
+    rc::Rc,
+};
 
 use int_enum::IntEnumError;
 use thiserror::Error;
@@ -19,7 +23,14 @@ pub enum DecompileError {
     ExpectedTable,
 }
 
-pub struct Branch {
+pub struct ConditionalA {
+    value: Rc<DValue>,
+    direction: bool,
+    target_1: usize,
+    target_2: usize,
+}
+
+pub struct ConditionalB {
     left: Rc<DValue>,
     right: Rc<DValue>,
     direction: bool,
@@ -29,11 +40,25 @@ pub struct Branch {
 
 pub enum Tail {
     None,
-    Return,
+    Return(Vec<Rc<DValue>>),
     TailCall(Rc<DValue>, Vec<Rc<DValue>>),
-    Eq(Branch),
-    Le(Branch),
-    Lt(Branch),
+    Eq(ConditionalB),
+    Le(ConditionalB),
+    Lt(ConditionalB),
+    TestSet(ConditionalA),
+    TForLoop {
+        call: Rc<DValue>,
+        inner: usize,
+        end: usize,
+    },
+    ForLoop {
+        init: Rc<DValue>,
+        limit: Rc<DValue>,
+        step: Rc<DValue>,
+        idx: Rc<DValue>,
+        inner: usize,
+        end: usize,
+    },
 }
 
 pub struct NodeStack {
@@ -117,7 +142,7 @@ impl Node {
         let mut iter = code.iter().enumerate().map(|(coff, i)| (coff + offset, i));
         while let Some((coff, i)) = iter.next() {
             // Decode conditional branch instruction
-            let mut decode_conditional = || {
+            let mut decode_conditionalb = || {
                 let left = self.stack_or_const(i.argb(), ctx);
                 let right = self.stack_or_const(i.argc(), ctx);
 
@@ -127,7 +152,7 @@ impl Node {
                 }
 
                 let target = coff as i32 + ijmp.argsbx() + 2;
-                Ok(Branch {
+                Ok(ConditionalB {
                     left,
                     right,
                     direction: i.arga() == 0,
@@ -150,6 +175,7 @@ impl Node {
                         .map(|j| self.stack.get((ra + 1 + j) as usize))
                         .collect();
                     self.tail = Tail::TailCall(func, params);
+                    assert!(iter.next().is_none());
                 }
                 OpCode::Closure => {
                     let bx = i.argbx() as usize;
@@ -176,7 +202,8 @@ impl Node {
                     self.ir.push(val);
                 }
                 OpCode::Eq => {
-                    self.tail = Tail::Eq(decode_conditional()?);
+                    self.tail = Tail::Eq(decode_conditionalb()?);
+                    assert!(iter.next().is_none());
                 }
                 OpCode::Div => {
                     let left = self.stack_or_const(i.argb(), ctx);
@@ -241,33 +268,133 @@ impl Node {
                         last -= 1;
                     }
                 }
-                OpCode::LoadK => todo!(),
-                OpCode::SetGlobal => todo!(),
-                OpCode::Jmp => todo!(),
-                OpCode::TForLoop => todo!(),
-                OpCode::SetUpval => todo!(),
-                OpCode::Not => todo!(),
-                OpCode::Vararg => todo!(),
-                OpCode::GetUpval => todo!(),
+                OpCode::LoadK => {
+                    let val = self.make_value(Value::Constant(
+                        ctx.func.constants[i.argbx() as usize].clone(),
+                    ));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::SetGlobal => {
+                    let cval = ctx.func.constants[i.argbx() as usize].clone();
+                    let src = self.stack.get(i.arga() as usize);
+                    self.make_value(Value::SetGlobal(cval, src));
+                }
+                OpCode::Jmp => {}
+                OpCode::TForLoop => {
+                    let ra = i.arga() as usize;
+                    let _index = self.stack.get(ra + 2);
+                    let _state = self.stack.get(ra + 1);
+                    let func = self.stack.get(ra);
+                    let nresults = i.argc() as usize;
+
+                    //self.stack.set(ra + 3, func.clone());
+                    //self.stack.set(ra + 4, state);
+                    //self.stack.set(ra + 5, index);
+
+                    let mut return_values = Vec::with_capacity(nresults);
+
+                    for ri in 0..nresults {
+                        let val = self.make_value(Value::ReturnValue);
+                        return_values.push(val.clone());
+                        self.stack.set(ra + 3 + ri, val);
+                    }
+
+                    let call = self.make_value(Value::Call(func, return_values));
+
+                    let (_, nexti) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
+                    let target = ((coff as i32) + 2 + nexti.argsbx()) as usize;
+                    self.tail = Tail::TForLoop {
+                        call,
+                        inner: target,
+                        end: coff + 2,
+                    };
+                    assert!(iter.next().is_none());
+                }
+                OpCode::SetUpval => {
+                    let src = self.stack.get(i.arga() as usize);
+                    self.make_value(Value::SetUpValue(i.argb() as usize, src));
+                }
+                OpCode::Not => {
+                    let src = self.stack.get(i.argb() as usize);
+                    let val = self.make_value(Value::Not(src));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::Vararg => {}
+                OpCode::GetUpval => {
+                    let val = ctx.func.upvalues[i.argb() as usize].clone();
+                    self.stack.set(i.arga() as usize, val);
+                }
                 OpCode::Add => {
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
                     let val = self.make_value(Value::Add(left, right));
                     self.stack.set(i.arga() as usize, val);
                 }
-                OpCode::Return => todo!(),
-                OpCode::GetGlobal => todo!(),
-                OpCode::Len => todo!(),
+                OpCode::Return => {
+                    let ra = i.arga() as usize;
+                    let nresults = i.argb() as i32 - 1;
+                    let mut results = Vec::new();
+                    if nresults == -1 {
+                        let va = self.make_value(Value::VarArg);
+                        results.push(va);
+                    } else {
+                        results.reserve(nresults as usize);
+                        for j in 0..nresults {
+                            results.push(self.stack.get(ra + j as usize));
+                        }
+                    }
+                    self.tail = Tail::Return(results);
+                    assert!(iter.next().is_none());
+                }
+                OpCode::GetGlobal => {
+                    let cval = ctx.func.constants[i.argbx() as usize].clone();
+                    let val = self.make_value(Value::GetGlobal(cval));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::Len => {
+                    let src = self.stack.get(i.argb() as usize);
+                    let val = self.make_value(Value::Len(src));
+                    self.stack.set(i.arga() as usize, val);
+                }
                 OpCode::Mul => {
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
                     let val = self.make_value(Value::Mul(left, right));
                     self.stack.set(i.arga() as usize, val);
                 }
-                OpCode::NewTable => todo!(),
-                OpCode::TestSet => todo!(),
-                OpCode::SetTable => todo!(),
-                OpCode::Unm => todo!(),
+                OpCode::NewTable => {
+                    let table = self.make_value(Value::NewTable(RefCell::new(Vec::new())));
+                    self.stack.set(i.arga() as usize, table);
+                }
+                OpCode::TestSet => {
+                    let test = self.stack.get(i.argb() as usize);
+                    let _original = self.stack.get(i.arga() as usize);
+
+                    let (_, ijmp) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
+                    if ijmp.opcode()? != OpCode::Jmp {
+                        return Err(DecompileError::ExpectedJmp);
+                    }
+
+                    let target = coff as i32 + ijmp.argsbx() + 2;
+                    self.tail = Tail::TestSet(ConditionalA {
+                        value: test,
+                        direction: i.arga() == 0,
+                        target_1: coff + 2,
+                        target_2: target as usize,
+                    });
+                }
+                OpCode::SetTable => {
+                    let table = self.stack.get(i.arga() as usize);
+                    let key = self.stack_or_const(i.argb(), ctx);
+                    let value = self.stack_or_const(i.argc(), ctx);
+
+                    let _dst = self.make_value(Value::SetTable(table, key, value));
+                },
+                OpCode::Unm => {
+                    let src = self.stack.get(i.argb() as usize);
+                    let val = self.make_value(Value::Unm(src));
+                    self.stack.set(i.arga() as usize, val);
+                }
                 OpCode::Mod => {
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
@@ -275,12 +402,51 @@ impl Node {
                     self.stack.set(i.arga() as usize, val);
                 }
                 OpCode::Lt => {
-                    self.tail = Tail::Lt(decode_conditional()?);
+                    self.tail = Tail::Lt(decode_conditionalb()?);
+                    assert!(iter.next().is_none());
                 }
-                OpCode::ForLoop => todo!(),
-                OpCode::Call => todo!(),
+                OpCode::ForLoop => {
+                    let ra = i.arga() as usize;
+                    let step = self.stack.get(ra + 2);
+                    let limit = self.stack.get(ra + 1);
+                    let init = self.stack.get(ra);
+                    
+                    let idx = self.make_value(Value::ForIndex);
+                    let target = (coff as i32 + 1 + i.argsbx()) as usize;
+
+                    self.tail = Tail::ForLoop {
+                        init,
+                        limit,
+                        step,
+                        idx,
+                        inner: target,
+                        end: coff + 1,
+                    };
+                    assert!(iter.next().is_none());
+                },
+                OpCode::Call => {
+                    let ra = i.arga() as usize;
+                    let func = self.stack.get(ra);
+                    let nparams = i.argb() as i32 - 1;
+                    let nresults = i.argc() as i32 - 1;
+                    match nresults {
+                        -1 => {
+                            let res = self.make_value(Value::VarArg);
+                            self.stack.set(ra, res);
+                        }
+                        _ => {
+                            for ri in 0..nresults as usize {
+                                let val = self.make_value(Value::ReturnValue);
+                                self.stack.set(ra + 3 + ri, val);
+                            }
+                        }
+                    };
+
+                    let call = self.make_value(Value::Call(func, return_values));
+                }
                 OpCode::Le => {
-                    self.tail = Tail::Le(decode_conditional()?);
+                    self.tail = Tail::Le(decode_conditionalb()?);
+                    assert!(iter.next().is_none());
                 }
                 OpCode::LoadBool => todo!(),
                 OpCode::ForPrep => todo!(),
