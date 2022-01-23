@@ -2,6 +2,7 @@ use byteorder::ReadBytesExt;
 use int_enum::{IntEnum, IntEnumError};
 
 use crate::reader::LuaReaderExt;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::fmt::Display;
 use std::fs::File;
@@ -298,15 +299,36 @@ impl Display for Constant {
 #[derive(Debug)]
 pub enum Value {
     Constant(Constant),
-    DValue,
+    UpValue,
     Param,
+    Closure(usize),
+    Unknown(usize),
+}
+
+#[derive(Debug, Clone)]
+pub enum Name {
+    None,
+    Local(String),
+    UpValue(String),
+    Parameter(String),
 }
 
 #[derive(Debug)]
 pub struct DValue {
     pub value: Value,
-    pub instruction_offset: u32,
-    pub label: String,
+    //pub instruction_offset: u32,
+    pub name: RefCell<Name>,
+    pub refcount: Cell<usize>,
+}
+
+impl DValue {
+    pub fn new(value: Value) -> DValue {
+        DValue {
+            value,
+            name: RefCell::new(Name::None),
+            refcount: Cell::new(0),
+        }
+    }
 }
 
 pub struct Function {
@@ -394,9 +416,10 @@ impl Function {
         let mut upvalues = Vec::with_capacity(nups as usize);
         for i in 0..nups {
             upvalues.push(Rc::new(DValue {
-                value: Value::DValue,
-                instruction_offset: 0,
-                label: format!("upvalue_{}", i),
+                value: Value::UpValue,
+                //instruction_offset: 0,
+                name: RefCell::new(Name::None),
+                refcount: Cell::new(0),
             }));
         }
 
@@ -404,8 +427,9 @@ impl Function {
         for i in 0..num_params {
             params.push(Rc::new(DValue {
                 value: Value::Param,
-                instruction_offset: 0,
-                label: format!("param_{}", i),
+                //instruction_offset: 0,
+                name: RefCell::new(Name::Parameter(format!("param_{}", i))),
+                refcount: Cell::new(0),
             }));
         }
 
