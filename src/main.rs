@@ -3,6 +3,7 @@ use std::io::Write;
 
 mod function;
 mod reader;
+mod ir;
 mod decompile;
 
 fn main() {

@@ -7,7 +7,7 @@ use std::{
 use int_enum::IntEnumError;
 use thiserror::Error;
 
-use crate::function::{DValue, Function, Instruction, Name, OpCode, Value};
+use crate::function::{DValue, Function, LvmInstruction, Name, OpCode, Value};
 
 #[derive(Debug, Error)]
 pub enum DecompileError {
@@ -89,6 +89,10 @@ impl NodeStack {
     }
 }
 
+pub struct NodeContext {
+
+}
+
 // Graph node
 pub struct Node {
     offset: usize,
@@ -137,7 +141,7 @@ impl Node {
         &mut self,
         ctx: &mut FunctionContext,
         offset: usize,
-        code: &[Instruction],
+        code: &[LvmInstruction],
     ) -> Result<(), DecompileError> {
         let mut iter = code.iter().enumerate().map(|(coff, i)| (coff + offset, i));
         while let Some((coff, i)) = iter.next() {
@@ -294,12 +298,12 @@ impl Node {
                     let mut return_values = Vec::with_capacity(nresults);
 
                     for ri in 0..nresults {
-                        let val = self.make_value(Value::ReturnValue);
+                        let val = self.make_value(Value::ReturnValue(func.clone()));
                         return_values.push(val.clone());
                         self.stack.set(ra + 3 + ri, val);
                     }
 
-                    let call = self.make_value(Value::Call(func, return_values));
+                    let call = self.make_value(Value::Call(func, Vec::new(), return_values));
 
                     let (_, nexti) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
                     let target = ((coff as i32) + 2 + nexti.argsbx()) as usize;
@@ -389,7 +393,7 @@ impl Node {
                     let value = self.stack_or_const(i.argc(), ctx);
 
                     let _dst = self.make_value(Value::SetTable(table, key, value));
-                },
+                }
                 OpCode::Unm => {
                     let src = self.stack.get(i.argb() as usize);
                     let val = self.make_value(Value::Unm(src));
@@ -410,7 +414,7 @@ impl Node {
                     let step = self.stack.get(ra + 2);
                     let limit = self.stack.get(ra + 1);
                     let init = self.stack.get(ra);
-                    
+
                     let idx = self.make_value(Value::ForIndex);
                     let target = (coff as i32 + 1 + i.argsbx()) as usize;
 
@@ -423,33 +427,43 @@ impl Node {
                         end: coff + 1,
                     };
                     assert!(iter.next().is_none());
-                },
+                }
                 OpCode::Call => {
                     let ra = i.arga() as usize;
                     let func = self.stack.get(ra);
                     let nparams = i.argb() as i32 - 1;
                     let nresults = i.argc() as i32 - 1;
-                    match nresults {
+                    let results = match nresults {
                         -1 => {
                             let res = self.make_value(Value::VarArg);
-                            self.stack.set(ra, res);
+                            self.stack.set(ra, res.clone());
+                            [res].to_vec()
                         }
-                        _ => {
-                            for ri in 0..nresults as usize {
-                                let val = self.make_value(Value::ReturnValue);
-                                self.stack.set(ra + 3 + ri, val);
-                            }
-                        }
+                        _ => (0..nresults as usize)
+                            .map(|ri| {
+                                let val = self.make_value(Value::ReturnValue(func.clone()));
+                                self.stack.set(ra + 3 + ri, val.clone());
+                                val
+                            })
+                            .collect(),
                     };
 
-                    let call = self.make_value(Value::Call(func, return_values));
+                    let params = (0..nparams)
+                        .map(|pi| self.stack.get(ra + 1 + pi as usize))
+                        .collect();
+                    let _call = self.make_value(Value::Call(func, params, results));
                 }
                 OpCode::Le => {
                     self.tail = Tail::Le(decode_conditionalb()?);
                     assert!(iter.next().is_none());
                 }
-                OpCode::LoadBool => todo!(),
-                OpCode::ForPrep => todo!(),
+                OpCode::LoadBool => {
+                    let val = self.make_value(Value::Boolean(i.argb() != 0));
+                    self.stack.set(i.arga() as usize, val);
+                }
+                OpCode::ForPrep => {
+                    // We don't need to do anything here
+                }
                 OpCode::SetCGlobal => todo!(),
                 OpCode::Test => todo!(),
                 OpCode::Pow => {

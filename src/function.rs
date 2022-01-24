@@ -82,9 +82,9 @@ impl Display for ConstReg {
     }
 }
 
-pub struct Instruction(u32);
+pub struct LvmInstruction(u32);
 
-impl Instruction {
+impl LvmInstruction {
     pub fn opcode(&self) -> Result<OpCode, IntEnumError<OpCode>> {
         OpCode::from_int(self.0 & 0x3F)
     }
@@ -128,7 +128,7 @@ impl Instruction {
     }
 }
 
-impl Display for Instruction {
+impl Display for LvmInstruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.opcode().map_err(|_| fmt::Error)? {
             OpCode::TailCall => write!(
@@ -326,12 +326,13 @@ pub enum Value {
     ForIndex,
     NewTable(RefCell<Vec<Option<Rc<DValue>>>>),
     SetGlobal(Constant, Rc<DValue>),
-    ReturnValue,
-    Call(Rc<DValue>, Vec<Rc<DValue>>),
+    ReturnValue(Rc<DValue>),
+    Call(Rc<DValue>, Vec<Rc<DValue>>, Vec<Rc<DValue>>),
     SetUpValue(usize, Rc<DValue>),
     Not(Rc<DValue>),
     GetGlobal(Constant),
     Len(Rc<DValue>),
+    Boolean(bool),
     Unm(Rc<DValue>),
     Unknown(usize),
 }
@@ -369,18 +370,18 @@ pub struct Function {
     pub nups: u8,
     pub is_vararg: u8,
     pub max_stack_size: u8,
-    pub code: Vec<Instruction>,
+    pub code: Vec<LvmInstruction>,
     pub constants: Vec<Constant>,
     pub upvalues: Vec<Rc<DValue>>,
     pub params: Vec<Rc<DValue>>,
     pub closures: Vec<Rc<Function>>,
 }
 
-fn load_code<R: Read>(mut rdr: R) -> IoResult<Vec<Instruction>> {
+fn load_code<R: Read>(mut rdr: R) -> IoResult<Vec<LvmInstruction>> {
     let code_size = rdr.read_varint()?;
     let mut code = Vec::with_capacity(code_size as usize);
     for _ in 0..code_size {
-        code.push(Instruction(rdr.read_uinteger()?));
+        code.push(LvmInstruction(rdr.read_uinteger()?));
     }
     Ok(code)
 }
