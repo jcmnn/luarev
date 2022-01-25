@@ -11,7 +11,7 @@ type SymbolWeakRef = Weak<Symbol>;
 pub enum Value {
     None,
     Add { left: SymbolRef, right: SymbolRef },
-    Unknown,
+    Unknown(StackId),
     ResolvedUnknown(Vec<SymbolRef>), // Vector of all possible symbols
 }
 
@@ -32,6 +32,34 @@ impl Symbol {
         })
     }
 
+    pub fn set_label(&self, label: String) {
+        // Return if label is the same
+        if *self.label.borrow() == label {
+            return;
+        }
+
+        // Set label of this symbol
+        self.label.replace(label.clone());
+
+        // Check if this symbol is an unknown value,
+        // and update references values if so.
+        if let Value::ResolvedUnknown(up) = &self.value {
+            for value in up {
+                value.set_label(label.clone());
+            }
+        }
+
+        // Check if any unknown values reference this symbol
+        for reference in self.references.borrow().iter() {
+            if let Some(reference) = reference.upgrade() {
+                if matches!(reference.value, Value::ResolvedUnknown(_)) {
+                    reference.set_label(label.clone());
+                }
+            }
+        }
+    }
+
+    // Returns an empty symbol
     pub fn none() -> SymbolRef {
         Self::new(Value::None)
     }
@@ -77,9 +105,7 @@ impl IrContext {
         self.stack[idx.0] = Some(val);
     }
 
-    pub fn get_stack(&mut self, idx: StackId, val: SymbolRef) {
-
-    }
+    pub fn get_stack(&mut self, idx: StackId, val: SymbolRef) {}
 
     pub fn add(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
         let sum = Symbol::add(left, right);
