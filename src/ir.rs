@@ -14,6 +14,10 @@ pub struct Call {
     returns: Vec<SymbolRef>,
 }
 
+impl Call {
+    
+}
+
 #[derive(Debug)]
 pub enum Value {
     None,
@@ -140,9 +144,13 @@ impl IrContext {
         }
     }
 
+    // Make add symbol
     pub fn add(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
         let sum = Symbol::add(left, right);
         self.set_stack(dst, sum.clone());
         self.symbols.push(sum);
     }
+
+    // Make call
+    pub fn call(&mut self, func: SymbolRef, params: Vec<SymbolRef>, return_base: StackId, return_count: usize)
 }
