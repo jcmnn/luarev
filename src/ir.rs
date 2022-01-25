@@ -3,11 +3,18 @@ use std::{
     rc::{Rc, Weak},
 };
 
-struct Call {}
 
 type SymbolRef = Rc<Symbol>;
 type SymbolWeakRef = Weak<Symbol>;
 
+#[derive(Debug)]
+pub struct Call {
+    func: SymbolRef,
+    params: Vec<SymbolRef>,
+    returns: Vec<SymbolRef>,
+}
+
+#[derive(Debug)]
 pub enum Value {
     None,
     Add { left: SymbolRef, right: SymbolRef },
@@ -16,6 +23,7 @@ pub enum Value {
 }
 
 // IR Symbol
+#[derive(Debug)]
 pub struct Symbol {
     pub value: Value,
     // Array of symbols that reference this symbol
@@ -79,8 +87,15 @@ impl Symbol {
     }
 }
 
+#[derive(Debug)]
 // Id of symbol on the stack
 pub struct StackId(usize);
+
+impl<T: Into<usize>> From<T> for StackId {
+    fn from(t: T) -> Self {
+        StackId(t.into())
+    }
+}
 
 // Context of IR instructions
 pub struct IrContext {
@@ -88,6 +103,7 @@ pub struct IrContext {
     stack: Vec<Option<SymbolRef>>,
     // Array of all symbols generated in this context
     symbols: Vec<SymbolRef>,
+    unknowns: Vec<SymbolRef>,
 }
 
 impl IrContext {
@@ -95,6 +111,7 @@ impl IrContext {
         IrContext {
             stack: Vec::new(),
             symbols: Vec::new(),
+            unknowns: Vec::new(),
         }
     }
 
@@ -105,7 +122,23 @@ impl IrContext {
         self.stack[idx.0] = Some(val);
     }
 
-    pub fn get_stack(&mut self, idx: StackId, val: SymbolRef) {}
+    pub fn get_stack(&mut self, idx: StackId) -> Rc<Symbol> {
+        if idx.0 >= self.stack.len() {
+            self.stack.resize(idx.0, None);
+        }
+
+        let val = &mut self.stack[idx.0];
+
+        match val {
+            Some(x) => x.clone(),
+            None => {
+                let v = Symbol::new(Value::Unknown(idx));
+                self.unknowns.push(v.clone());
+                *val = Some(v.clone());
+                v
+            }
+        }
+    }
 
     pub fn add(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
         let sum = Symbol::add(left, right);

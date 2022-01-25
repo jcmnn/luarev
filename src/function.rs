@@ -326,6 +326,7 @@ pub enum Value {
     ForIndex,
     NewTable(RefCell<Vec<Option<Rc<DValue>>>>),
     SetGlobal(Constant, Rc<DValue>),
+    SetCGlobal(Constant, Rc<DValue>),
     ReturnValue(Rc<DValue>),
     Call(Rc<DValue>, Vec<Rc<DValue>>, Vec<Rc<DValue>>),
     SetUpValue(usize, Rc<DValue>),

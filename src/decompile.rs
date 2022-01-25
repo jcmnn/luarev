@@ -464,7 +464,11 @@ impl Node {
                 OpCode::ForPrep => {
                     // We don't need to do anything here
                 }
-                OpCode::SetCGlobal => todo!(),
+                OpCode::SetCGlobal => {
+                    let cval = ctx.func.constants[i.argbx() as usize].clone();
+                    let src = self.stack.get(i.arga() as usize);
+                    self.make_value(Value::SetCGlobal(cval, src));
+                },
                 OpCode::Test => todo!(),
                 OpCode::Pow => {
                     let left = self.stack_or_const(i.argb(), ctx);
