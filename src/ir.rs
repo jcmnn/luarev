@@ -3,9 +3,8 @@ use std::{
     rc::{Rc, Weak},
 };
 
-
-type SymbolRef = Rc<Symbol>;
-type SymbolWeakRef = Weak<Symbol>;
+type SymbolRef = Rc<RefCell<Symbol>>;
+type SymbolWeakRef = Weak<RefCell<Symbol>>;
 
 #[derive(Debug)]
 pub struct Call {
@@ -15,13 +14,25 @@ pub struct Call {
 }
 
 impl Call {
-    
+    pub fn new(func: SymbolRef, params: Vec<SymbolRef>, return_count: usize) -> Rc<Call> {
+        let mut call = Rc::new(Call {
+            func,
+            params,
+            returns: (0..return_count).map(|_| Symbol::none()).collect(),
+        });
+
+        for r in &call.returns {
+            r.borrow_mut().value = Value::Return(Rc::downgrade(&call));
+        }
+        call
+    }
 }
 
 #[derive(Debug)]
 pub enum Value {
     None,
     Add { left: SymbolRef, right: SymbolRef },
+    Return(Weak<Call>),
     Unknown(StackId),
     ResolvedUnknown(Vec<SymbolRef>), // Vector of all possible symbols
 }
@@ -31,39 +42,40 @@ pub enum Value {
 pub struct Symbol {
     pub value: Value,
     // Array of symbols that reference this symbol
-    pub references: RefCell<Vec<SymbolWeakRef>>,
-    pub label: RefCell<String>,
+    pub references: Vec<SymbolWeakRef>,
+    pub label: String,
 }
 
 impl Symbol {
     pub fn new(value: Value) -> SymbolRef {
-        Rc::new(Symbol {
+        Rc::new(RefCell::new(Symbol {
             value,
-            references: RefCell::new(Vec::new()),
-            label: RefCell::new(String::new()),
-        })
+            references: Vec::new(),
+            label: String::new(),
+        }))
     }
 
-    pub fn set_label(&self, label: String) {
+    pub fn set_label(&mut self, label: String) {
         // Return if label is the same
-        if *self.label.borrow() == label {
+        if self.label == label {
             return;
         }
 
         // Set label of this symbol
-        self.label.replace(label.clone());
+        self.label = label.clone();
 
         // Check if this symbol is an unknown value,
         // and update references values if so.
         if let Value::ResolvedUnknown(up) = &self.value {
             for value in up {
-                value.set_label(label.clone());
+                value.borrow_mut().set_label(label.clone());
             }
         }
 
         // Check if any unknown values reference this symbol
-        for reference in self.references.borrow().iter() {
+        for reference in &self.references {
             if let Some(reference) = reference.upgrade() {
+                let mut reference = reference.borrow_mut();
                 if matches!(reference.value, Value::ResolvedUnknown(_)) {
                     reference.set_label(label.clone());
                 }
@@ -76,8 +88,8 @@ impl Symbol {
         Self::new(Value::None)
     }
 
-    pub fn add_reference(&self, reference: &SymbolRef) {
-        self.references.borrow_mut().push(Rc::downgrade(reference));
+    pub fn add_reference(&mut self, reference: &SymbolRef) {
+        self.references.push(Rc::downgrade(reference));
     }
 
     pub fn add(left: SymbolRef, right: SymbolRef) -> SymbolRef {
@@ -85,8 +97,8 @@ impl Symbol {
             left: left.clone(),
             right: right.clone(),
         });
-        left.add_reference(&sum);
-        right.add_reference(&sum);
+        left.borrow_mut().add_reference(&sum);
+        right.borrow_mut().add_reference(&sum);
         sum
     }
 }
@@ -126,7 +138,7 @@ impl IrContext {
         self.stack[idx.0] = Some(val);
     }
 
-    pub fn get_stack(&mut self, idx: StackId) -> Rc<Symbol> {
+    pub fn get_stack(&mut self, idx: StackId) -> SymbolRef {
         if idx.0 >= self.stack.len() {
             self.stack.resize(idx.0, None);
         }
@@ -152,5 +164,22 @@ impl IrContext {
     }
 
     // Make call
-    pub fn call(&mut self, func: SymbolRef, params: Vec<SymbolRef>, return_base: StackId, return_count: usize)
+    pub fn call(
+        &mut self,
+        func: SymbolRef,
+        param_base: StackId,
+        param_count: usize,
+        return_base: StackId,
+        return_count: usize,
+    ) {
+        let params = (0..param_count)
+            .map(|p| self.get_stack(StackId::from(param_base.0 + p)))
+            .collect();
+        let c = Call::new(func, params, return_count);
+
+        for p in &c.params {
+            self.set_stack(StackId::from(return_base.0 + return_count), p.clone());
+        }
+        // todo: add call to ir
+    }
 }
