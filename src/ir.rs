@@ -3,36 +3,26 @@ use std::{
     rc::{Rc, Weak},
 };
 
-type SymbolRef = Rc<RefCell<Symbol>>;
-type SymbolWeakRef = Weak<RefCell<Symbol>>;
-
-#[derive(Debug)]
-pub struct Call {
-    func: SymbolRef,
-    params: Vec<SymbolRef>,
-    returns: Vec<SymbolRef>,
-}
-
-impl Call {
-    pub fn new(func: SymbolRef, params: Vec<SymbolRef>, return_count: usize) -> Rc<Call> {
-        let mut call = Rc::new(Call {
-            func,
-            params,
-            returns: (0..return_count).map(|_| Symbol::none()).collect(),
-        });
-
-        for r in &call.returns {
-            r.borrow_mut().value = Value::Return(Rc::downgrade(&call));
-        }
-        call
-    }
-}
+pub type SymbolRef = Rc<RefCell<Symbol>>;
+pub type SymbolWeakRef = Weak<RefCell<Symbol>>;
 
 #[derive(Debug)]
 pub enum Value {
     None,
-    Add { left: SymbolRef, right: SymbolRef },
-    Return(Weak<Call>),
+    Add {
+        left: SymbolRef,
+        right: SymbolRef,
+    },
+    Return(SymbolWeakRef),
+    Call {
+        func: SymbolRef,
+        params: Vec<SymbolRef>,
+        returns: Vec<SymbolRef>,
+    },
+    Closure {
+        index: usize,
+        upvalues: Vec<SymbolRef>,
+    },
     Unknown(StackId),
     ResolvedUnknown(Vec<SymbolRef>), // Vector of all possible symbols
 }
@@ -44,6 +34,8 @@ pub struct Symbol {
     // Array of symbols that reference this symbol
     pub references: Vec<SymbolWeakRef>,
     pub label: String,
+    // Set to true if the symbol must be evaluated where it is defined (e.g. for upvalues)
+    pub must_define: bool,
 }
 
 impl Symbol {
@@ -52,6 +44,7 @@ impl Symbol {
             value,
             references: Vec::new(),
             label: String::new(),
+            must_define: false,
         }))
     }
 
@@ -83,6 +76,30 @@ impl Symbol {
         }
     }
 
+    pub fn call(func: SymbolRef, params: Vec<SymbolRef>, return_count: usize) -> SymbolRef {
+        let call = Symbol::new(Value::Call {
+            func,
+            params: params.clone(),
+            returns: (0..return_count).map(|_| Symbol::none()).collect(),
+        });
+
+        if let Value::Call {
+            func: _,
+            params,
+            returns,
+        } = &call.borrow_mut().value
+        {
+            for r in returns {
+                r.borrow_mut().value = Value::Return(Rc::downgrade(&call));
+            }
+            for param in params {
+                param.borrow_mut().add_reference(&call);
+            }
+        }
+
+        call
+    }
+
     // Returns an empty symbol
     pub fn none() -> SymbolRef {
         Self::new(Value::None)
@@ -100,6 +117,20 @@ impl Symbol {
         left.borrow_mut().add_reference(&sum);
         right.borrow_mut().add_reference(&sum);
         sum
+    }
+
+    pub fn closure(index: usize, upvalues: Vec<SymbolRef>) -> SymbolRef {
+        // Force upvalues to be evaluated before closure
+        let val = Self::new(Value::Closure {
+            index,
+            upvalues: upvalues.clone(),
+        });
+        for upval in &upvalues {
+            let mut upval = upval.borrow_mut();
+            upval.must_define = true;
+            upval.add_reference(&val);
+        }
+        val
     }
 }
 
@@ -175,11 +206,25 @@ impl IrContext {
         let params = (0..param_count)
             .map(|p| self.get_stack(StackId::from(param_base.0 + p)))
             .collect();
-        let c = Call::new(func, params, return_count);
+        let c = Symbol::call(func, params, return_count);
+        // Add call to IR
+        self.symbols.push(c.clone());
 
-        for p in &c.params {
-            self.set_stack(StackId::from(return_base.0 + return_count), p.clone());
-        }
-        // todo: add call to ir
+        // Then add return values
+        if let Value::Call {
+            func: _,
+            params,
+            returns: _,
+        } = &c.borrow().value
+        {
+            for p in params {
+                self.set_stack(StackId::from(return_base.0 + return_count), p.clone());
+            }
+        };
+    }
+
+    pub fn closure(&mut self, dst: StackId, index: usize, upvalues: Vec<SymbolRef>) {
+        let val = Symbol::closure(index, upvalues);
+        self.set_stack(dst, val);
     }
 }

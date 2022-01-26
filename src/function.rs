@@ -373,7 +373,6 @@ pub struct Function {
     pub max_stack_size: u8,
     pub code: Vec<LvmInstruction>,
     pub constants: Vec<Constant>,
-    pub upvalues: Vec<Rc<DValue>>,
     pub params: Vec<Rc<DValue>>,
     pub closures: Vec<Rc<Function>>,
 }
@@ -446,16 +445,6 @@ impl Function {
         let closures = load_closures(&mut *rdr)?;
         load_debug(&mut *rdr)?;
 
-        let mut upvalues = Vec::with_capacity(nups as usize);
-        for i in 0..nups {
-            upvalues.push(Rc::new(DValue {
-                value: Value::UpValue,
-                //instruction_offset: 0,
-                name: RefCell::new(Name::None),
-                refcount: Cell::new(0),
-            }));
-        }
-
         let mut params = Vec::with_capacity(num_params as usize);
         for i in 0..num_params {
             params.push(Rc::new(DValue {
@@ -475,7 +464,6 @@ impl Function {
             max_stack_size,
             code,
             constants,
-            upvalues,
             params,
             closures,
         }))

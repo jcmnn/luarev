@@ -7,7 +7,7 @@ use std::{
 use int_enum::IntEnumError;
 use thiserror::Error;
 
-use crate::function::{DValue, Function, LvmInstruction, Name, OpCode, Value};
+use crate::{function::{DValue, Function, LvmInstruction, Name, OpCode, Value}, ir::{IrContext, SymbolRef}};
 
 #[derive(Debug, Error)]
 pub enum DecompileError {
@@ -96,7 +96,7 @@ pub struct NodeContext {
 // Graph node
 pub struct Node {
     offset: usize,
-    ir: Vec<Rc<DValue>>,
+    ir: IrContext,
     stack: NodeStack,
     tail: Tail,
 }
@@ -115,7 +115,7 @@ impl Node {
     fn new(offset: usize) -> Node {
         Node {
             offset,
-            ir: Vec::new(),
+            ir: IrContext::new(),
             stack: NodeStack::new(),
             tail: Tail::None,
         }
@@ -128,12 +128,6 @@ impl Node {
         }
 
         self.stack.get(r as usize).clone()
-    }
-
-    fn make_value(&mut self, value: Value) -> Rc<DValue> {
-        let dv = Rc::new(DValue::new(value));
-        self.ir.push(dv.clone());
-        dv
     }
 
     // Adds instructions to graph node
@@ -188,6 +182,14 @@ impl Node {
                         continue;
                     }
                     let closure = &ctx.func.closures[bx];
+                    let upvalues = (0..closure.nups).map(|_| {
+                        let (_, upi) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
+                        let val = match upi.opcode()? {
+                            OpCode::GetUpval => ctx.func.upvalues[upi.argb() as usize].clone(),
+                            OpCode::Move => self.stack.get(upi.argb() as usize),
+                            _ => return Err(DecompileError::InvalidUpvalue),
+                        };
+                    }).collect();
                     for up in closure.upvalues.iter() {
                         let (_, upi) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
                         let val = match upi.opcode()? {
@@ -511,6 +513,7 @@ pub struct FunctionContext {
     branches: Vec<Vec<usize>>,
     references: Vec<Vec<usize>>,
     root: Rc<RootContext>,
+    upvalues: Vec<SymbolRef>,
 }
 
 impl FunctionContext {
@@ -523,6 +526,7 @@ impl FunctionContext {
             branches,
             references,
             root,
+            upvalues: Vec::new(),
         }
     }
 
