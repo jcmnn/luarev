@@ -3,13 +3,29 @@ use std::{
     rc::{Rc, Weak},
 };
 
+use crate::function::Constant;
+
 pub type SymbolRef = Rc<RefCell<Symbol>>;
 pub type SymbolWeakRef = Weak<RefCell<Symbol>>;
 
 #[derive(Debug)]
 pub enum Value {
     None,
+    Constant(Constant),
+    Number(f32),
     Add {
+        left: SymbolRef,
+        right: SymbolRef,
+    },
+    Sub {
+        left: SymbolRef,
+        right: SymbolRef,
+    },
+    Div {
+        left: SymbolRef,
+        right: SymbolRef,
+    },
+    Mul {
         left: SymbolRef,
         right: SymbolRef,
     },
@@ -19,10 +35,15 @@ pub enum Value {
         params: Vec<SymbolRef>,
         returns: Vec<SymbolRef>,
     },
+    GetTable {
+        table: SymbolRef,
+        key: SymbolRef,
+    },
     Closure {
         index: usize,
         upvalues: Vec<SymbolRef>,
     },
+    Concat(Vec<SymbolRef>),
     Unknown(StackId),
     ResolvedUnknown(Vec<SymbolRef>), // Vector of all possible symbols
 }
@@ -78,10 +99,12 @@ impl Symbol {
 
     pub fn call(func: SymbolRef, params: Vec<SymbolRef>, return_count: usize) -> SymbolRef {
         let call = Symbol::new(Value::Call {
-            func,
+            func: func.clone(),
             params: params.clone(),
             returns: (0..return_count).map(|_| Symbol::none()).collect(),
         });
+
+        func.borrow_mut().add_reference(&call);
 
         if let Value::Call {
             func: _,
@@ -119,6 +142,16 @@ impl Symbol {
         sum
     }
 
+    pub fn div(left: SymbolRef, right: SymbolRef) -> SymbolRef {
+        let sum = Symbol::new(Value::Div {
+            left: left.clone(),
+            right: right.clone(),
+        });
+        left.borrow_mut().add_reference(&sum);
+        right.borrow_mut().add_reference(&sum);
+        sum
+    }
+
     pub fn closure(index: usize, upvalues: Vec<SymbolRef>) -> SymbolRef {
         // Force upvalues to be evaluated before closure
         let val = Self::new(Value::Closure {
@@ -132,15 +165,43 @@ impl Symbol {
         }
         val
     }
+
+    pub fn concat(values: Vec<SymbolRef>) -> SymbolRef {
+        let val = Self::new(Value::Concat(values.clone()));
+        for v in &values {
+            v.borrow_mut().add_reference(&val);
+        }
+
+        val
+    }
+
+    pub fn gettable(table: SymbolRef, key: SymbolRef) -> SymbolRef {
+        let val = Self::new(Value::GetTable {table: table.clone(), key: key.clone()});
+        table.borrow_mut().add_reference(&val);
+        key.borrow_mut().add_reference(&val);
+        val
+    }
 }
 
 #[derive(Debug)]
 // Id of symbol on the stack
 pub struct StackId(usize);
 
-impl<T: Into<usize>> From<T> for StackId {
-    fn from(t: T) -> Self {
-        StackId(t.into())
+impl From<u32> for StackId {
+    fn from(t: u32) -> Self {
+        StackId(t as usize)
+    }
+}
+
+impl From<i32> for StackId {
+    fn from(t: i32) -> Self {
+        StackId(t as usize)
+    }
+}
+
+impl From<usize> for StackId {
+    fn from(t: usize) -> Self {
+        StackId(t)
     }
 }
 
@@ -194,6 +255,25 @@ impl IrContext {
         self.symbols.push(sum);
     }
 
+    // Make div symbol
+    pub fn div(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
+        let res = Symbol::div(left, right);
+        self.set_stack(dst, res.clone());
+        self.symbols.push(res);
+    }
+
+    pub fn set_number(&mut self, dst: StackId, n: f32) {
+        let res = Symbol::new(Value::Number(n));
+        self.set_stack(dst, res.clone());
+        self.symbols.push(res);
+    }
+
+    pub fn make_constant(&mut self, constant: Constant) -> SymbolRef {
+        let val = Symbol::new(Value::Constant(constant));
+        self.symbols.push(val.clone());
+        val
+    }
+
     // Make call
     pub fn call(
         &mut self,
@@ -225,6 +305,16 @@ impl IrContext {
 
     pub fn closure(&mut self, dst: StackId, index: usize, upvalues: Vec<SymbolRef>) {
         let val = Symbol::closure(index, upvalues);
+        self.set_stack(dst, val);
+    }
+
+    pub fn concat(&mut self, dst: StackId, values: Vec<SymbolRef>) {
+        let val = Symbol::concat(values);
+        self.set_stack(dst, val);
+    }
+
+    pub fn gettable(&mut self, dst: StackId, table: SymbolRef, key: SymbolRef) {
+        let val = Symbol::gettable(table, key);
         self.set_stack(dst, val);
     }
 }

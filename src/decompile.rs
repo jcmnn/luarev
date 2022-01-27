@@ -7,7 +7,7 @@ use std::{
 use int_enum::IntEnumError;
 use thiserror::Error;
 
-use crate::{function::{DValue, Function, LvmInstruction, Name, OpCode, Value}, ir::{IrContext, SymbolRef}};
+use crate::{function::{DValue, Function, LvmInstruction, Name, OpCode, Value}, ir::{IrContext, SymbolRef, StackId}};
 
 #[derive(Debug, Error)]
 pub enum DecompileError {
@@ -122,12 +122,12 @@ impl Node {
     }
 
     // Returns value on stack or constant from encoded value
-    fn stack_or_const(&mut self, r: u32, ctx: &FunctionContext) -> Rc<DValue> {
+    fn stack_or_const(&mut self, r: u32, ctx: &FunctionContext) -> SymbolRef {
         if isk(r) {
-            return self.make_value(Value::Constant(ctx.func.constants[indexk(r)].clone()));
+            return self.ir.make_constant(ctx.func.constants[indexk(r)].clone());
         }
 
-        self.stack.get(r as usize).clone()
+        self.ir.get_stack(StackId::from(r))
     }
 
     // Adds instructions to graph node
@@ -184,58 +184,41 @@ impl Node {
                     let closure = &ctx.func.closures[bx];
                     let upvalues = (0..closure.nups).map(|_| {
                         let (_, upi) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
-                        let val = match upi.opcode()? {
-                            OpCode::GetUpval => ctx.func.upvalues[upi.argb() as usize].clone(),
-                            OpCode::Move => self.stack.get(upi.argb() as usize),
-                            _ => return Err(DecompileError::InvalidUpvalue),
-                        };
-                    }).collect();
-                    for up in closure.upvalues.iter() {
-                        let (_, upi) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
-                        let val = match upi.opcode()? {
-                            OpCode::GetUpval => ctx.func.upvalues[upi.argb() as usize].clone(),
-                            OpCode::Move => self.stack.get(upi.argb() as usize),
-                            _ => return Err(DecompileError::InvalidUpvalue),
-                        };
-                        // Force name
-                        if matches!(*val.name.borrow(), Name::None) {
-                            val.name.replace(ctx.root.make_local());
+                        match upi.opcode()? {
+                            OpCode::GetUpval => Ok(ctx.upvalues[upi.argb() as usize].clone()),
+                            OpCode::Move => Ok(self.ir.get_stack(StackId::from(upi.argb()))),
+                            _ => Err(DecompileError::InvalidUpvalue),
                         }
-                        up.name.replace((*val.name.borrow()).clone());
-                    }
-                    let val = self.make_value(Value::Closure(bx));
-                    self.stack.set(i.arga() as usize, val.clone());
-                    self.ir.push(val);
+                    }).collect()?;
+
+                    self.ir.closure(StackId::from(i.arga()), bx, upvalues);
                 }
                 OpCode::Eq => {
                     self.tail = Tail::Eq(decode_conditionalb()?);
                     assert!(iter.next().is_none());
                 }
                 OpCode::Div => {
+
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
-                    let val = self.make_value(Value::Div(left, right));
-                    self.stack.set(i.arga() as usize, val);
+                    self.ir.div(StackId::from(i.arga()), left, right);
                 }
                 OpCode::GetNum => {
-                    let val = self.make_value(Value::Number(i.number()));
-                    self.stack.set(i.arga() as usize, val);
+                    self.ir.set_number(StackId::from(i.arga()), i.number());
                 }
                 OpCode::Concat => {
                     let b = i.argb();
                     let c = i.argc();
 
-                    let params: Vec<Rc<DValue>> =
-                        (b..=c).map(|x| self.stack.get(x as usize)).collect();
+                    let params: Vec<SymbolRef> =
+                        (b..=c).map(|x| self.ir.get_stack(StackId::from(x))).collect();
 
-                    let val = self.make_value(Value::Concat(params));
-                    self.stack.set(i.arga() as usize, val);
+                    self.ir.concat(StackId::from(i.arga()), params);
                 }
                 OpCode::GetTable => {
-                    let table = self.stack.get(i.argb() as usize);
+                    let table = self.ir.get_stack(StackId::from(i.argb()));
                     let key = self.stack_or_const(i.argc(), ctx);
-                    let val = self.make_value(Value::TableValue(table, key));
-                    self.stack.set(i.arga() as usize, val);
+                    self.ir.gettable(StackId::from(i.arga()), table, key);
                 }
                 OpCode::SetList => {
                     let n = i.argb();
@@ -275,10 +258,10 @@ impl Node {
                     }
                 }
                 OpCode::LoadK => {
-                    let val = self.make_value(Value::Constant(
-                        ctx.func.constants[i.argbx() as usize].clone(),
-                    ));
-                    self.stack.set(i.arga() as usize, val);
+                    let val = self.ir.make_constant(
+                        ctx.func.constants[i.argbx() as usize].clone()
+                    );
+                    self.ir.set_stack(StackId::from(i.arga()), val);
                 }
                 OpCode::SetGlobal => {
                     let cval = ctx.func.constants[i.argbx() as usize].clone();
