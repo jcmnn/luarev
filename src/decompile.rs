@@ -7,7 +7,10 @@ use std::{
 use int_enum::IntEnumError;
 use thiserror::Error;
 
-use crate::{function::{DValue, Function, LvmInstruction, Name, OpCode, Value}, ir::{IrContext, SymbolRef, StackId}};
+use crate::{
+    function::{Function, LvmInstruction, Name, OpCode},
+    ir::{IrContext, StackId, SymbolRef, Value, Symbol},
+};
 
 #[derive(Debug, Error)]
 pub enum DecompileError {
@@ -89,9 +92,7 @@ impl NodeStack {
     }
 }
 
-pub struct NodeContext {
-
-}
+pub struct NodeContext {}
 
 // Graph node
 pub struct Node {
@@ -182,14 +183,16 @@ impl Node {
                         continue;
                     }
                     let closure = &ctx.func.closures[bx];
-                    let upvalues = (0..closure.nups).map(|_| {
-                        let (_, upi) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
-                        match upi.opcode()? {
-                            OpCode::GetUpval => Ok(ctx.upvalues[upi.argb() as usize].clone()),
-                            OpCode::Move => Ok(self.ir.get_stack(StackId::from(upi.argb()))),
-                            _ => Err(DecompileError::InvalidUpvalue),
-                        }
-                    }).collect()?;
+                    let upvalues = (0..closure.nups)
+                        .map(|_| {
+                            let (_, upi) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
+                            match upi.opcode()? {
+                                OpCode::GetUpval => Ok(ctx.upvalues[upi.argb() as usize].clone()),
+                                OpCode::Move => Ok(self.ir.get_stack(StackId::from(upi.argb()))),
+                                _ => Err(DecompileError::InvalidUpvalue),
+                            }
+                        })
+                        .collect()?;
 
                     self.ir.closure(StackId::from(i.arga()), bx, upvalues);
                 }
@@ -198,7 +201,6 @@ impl Node {
                     assert!(iter.next().is_none());
                 }
                 OpCode::Div => {
-
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
                     self.ir.div(StackId::from(i.arga()), left, right);
@@ -210,8 +212,9 @@ impl Node {
                     let b = i.argb();
                     let c = i.argc();
 
-                    let params: Vec<SymbolRef> =
-                        (b..=c).map(|x| self.ir.get_stack(StackId::from(x))).collect();
+                    let params: Vec<SymbolRef> = (b..=c)
+                        .map(|x| self.ir.get_stack(StackId::from(x)))
+                        .collect();
 
                     self.ir.concat(StackId::from(i.arga()), params);
                 }
@@ -230,9 +233,9 @@ impl Node {
                         c => c,
                     };
 
-                    let ra = self.stack.get(i.arga() as usize);
-                    let mut items = match &ra.value {
-                        Value::NewTable(items) => items.borrow_mut(),
+                    let table = self.ir.get_stack(StackId::from(i.arga()));
+                    let mut items = match table.borrow().value {
+                        Value::Table{items} => items,
                         _ => return Err(DecompileError::ExpectedTable),
                     };
                     let mut last = (((c - 1) * 50) + n) as usize;
@@ -242,7 +245,9 @@ impl Node {
                         if last >= items.len() {
                             items.resize(last + 1, None);
                         }
-                        items[last] = Some(Rc::new(DValue::new(Value::VarArg)));
+                        let val = self.ir.add_symbol(Symbol::new(Value::VarArg));
+                        val.borrow_mut().add_reference(&table);
+                        items[last] = Some(val);
                         continue;
                     }
 
@@ -252,21 +257,21 @@ impl Node {
                     }
 
                     for idx in n..0 {
-                        let val = self.stack.get((i.arga() + idx) as usize);
+                        let val = self.ir.get_stack(StackId::from(i.arga() + idx));
+                        val.borrow_mut().add_reference(&table);
                         items[last] = Some(val);
                         last -= 1;
                     }
                 }
                 OpCode::LoadK => {
-                    let val = self.ir.make_constant(
-                        ctx.func.constants[i.argbx() as usize].clone()
-                    );
+                    let val = self
+                        .ir
+                        .make_constant(ctx.func.constants[i.argbx() as usize].clone());
                     self.ir.set_stack(StackId::from(i.arga()), val);
                 }
                 OpCode::SetGlobal => {
                     let cval = ctx.func.constants[i.argbx() as usize].clone();
-                    let src = self.stack.get(i.arga() as usize);
-                    self.make_value(Value::SetGlobal(cval, src));
+                    self.ir.set_global(cval, StackId::from(i.arga()));
                 }
                 OpCode::Jmp => {}
                 OpCode::TForLoop => {
@@ -280,15 +285,7 @@ impl Node {
                     //self.stack.set(ra + 4, state);
                     //self.stack.set(ra + 5, index);
 
-                    let mut return_values = Vec::with_capacity(nresults);
-
-                    for ri in 0..nresults {
-                        let val = self.make_value(Value::ReturnValue(func.clone()));
-                        return_values.push(val.clone());
-                        self.stack.set(ra + 3 + ri, val);
-                    }
-
-                    let call = self.make_value(Value::Call(func, Vec::new(), return_values));
+                    let call = self.ir.call(func, StackId::from(ra + 1), 2, StackId::from(ra + 3), nresults);
 
                     let (_, nexti) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
                     let target = ((coff as i32) + 2 + nexti.argsbx()) as usize;
@@ -453,7 +450,7 @@ impl Node {
                     let cval = ctx.func.constants[i.argbx() as usize].clone();
                     let src = self.stack.get(i.arga() as usize);
                     self.make_value(Value::SetCGlobal(cval, src));
-                },
+                }
                 OpCode::Test => todo!(),
                 OpCode::Pow => {
                     let left = self.stack_or_const(i.argb(), ctx);

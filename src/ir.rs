@@ -43,6 +43,12 @@ pub enum Value {
         index: usize,
         upvalues: Vec<SymbolRef>,
     },
+    Table {
+        items: Vec<Option<SymbolRef>>,
+    },
+    Global(Constant),
+    SetGlobal(Constant, SymbolRef),
+    VarArg,
     Concat(Vec<SymbolRef>),
     Unknown(StackId),
     ResolvedUnknown(Vec<SymbolRef>), // Vector of all possible symbols
@@ -181,6 +187,12 @@ impl Symbol {
         key.borrow_mut().add_reference(&val);
         val
     }
+
+    pub fn set_global(key: Constant, value: SymbolRef) -> SymbolRef {
+        let res = Self::new(Value::SetGlobal(key, value.clone()));
+        value.borrow_mut().add_reference(&res);
+        res
+    }
 }
 
 #[derive(Debug)]
@@ -248,30 +260,31 @@ impl IrContext {
         }
     }
 
+    // Add symbol to ir history
+    pub fn add_symbol(&mut self, symbol: SymbolRef) -> SymbolRef {
+        self.symbols.push(symbol.clone());
+        symbol
+    }
+
     // Make add symbol
     pub fn add(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
-        let sum = Symbol::add(left, right);
-        self.set_stack(dst, sum.clone());
-        self.symbols.push(sum);
+        let sum = self.add_symbol(Symbol::add(left, right));
+        self.set_stack(dst, sum);
     }
 
     // Make div symbol
     pub fn div(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
-        let res = Symbol::div(left, right);
-        self.set_stack(dst, res.clone());
-        self.symbols.push(res);
+        let res = self.add_symbol(Symbol::div(left, right));
+        self.set_stack(dst, res);
     }
 
     pub fn set_number(&mut self, dst: StackId, n: f32) {
-        let res = Symbol::new(Value::Number(n));
-        self.set_stack(dst, res.clone());
-        self.symbols.push(res);
+        let res = self.add_symbol(Symbol::new(Value::Number(n)));
+        self.set_stack(dst, res);
     }
 
     pub fn make_constant(&mut self, constant: Constant) -> SymbolRef {
-        let val = Symbol::new(Value::Constant(constant));
-        self.symbols.push(val.clone());
-        val
+        self.add_symbol(Symbol::new(Value::Constant(constant)))
     }
 
     // Make call
@@ -282,13 +295,11 @@ impl IrContext {
         param_count: usize,
         return_base: StackId,
         return_count: usize,
-    ) {
+    ) -> SymbolRef {
         let params = (0..param_count)
             .map(|p| self.get_stack(StackId::from(param_base.0 + p)))
             .collect();
-        let c = Symbol::call(func, params, return_count);
-        // Add call to IR
-        self.symbols.push(c.clone());
+        let c = self.add_symbol(Symbol::call(func, params, return_count));
 
         // Then add return values
         if let Value::Call {
@@ -301,20 +312,25 @@ impl IrContext {
                 self.set_stack(StackId::from(return_base.0 + return_count), p.clone());
             }
         };
+        c
     }
 
     pub fn closure(&mut self, dst: StackId, index: usize, upvalues: Vec<SymbolRef>) {
-        let val = Symbol::closure(index, upvalues);
+        let val = self.add_symbol(Symbol::closure(index, upvalues));
         self.set_stack(dst, val);
     }
 
     pub fn concat(&mut self, dst: StackId, values: Vec<SymbolRef>) {
-        let val = Symbol::concat(values);
+        let val = self.add_symbol(Symbol::concat(values));
         self.set_stack(dst, val);
     }
 
     pub fn gettable(&mut self, dst: StackId, table: SymbolRef, key: SymbolRef) {
-        let val = Symbol::gettable(table, key);
+        let val = self.add_symbol(Symbol::gettable(table, key));
         self.set_stack(dst, val);
+    }
+
+    pub fn set_global(&mut self, key: Constant, val: StackId) {
+        self.add_symbol(Symbol::set_global(key, self.get_stack(val)));
     }
 }
