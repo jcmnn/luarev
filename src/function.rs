@@ -3,7 +3,7 @@ use int_enum::{IntEnum, IntEnumError};
 
 use crate::reader::LuaReaderExt;
 use std::cell::{Cell, RefCell};
-use std::fmt;
+use std::fmt::{self, Debug};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, Read, Result as IoResult};
@@ -82,6 +82,7 @@ impl Display for ConstReg {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct LvmInstruction(u32);
 
 impl LvmInstruction {
@@ -125,6 +126,12 @@ impl LvmInstruction {
         let b = self.argbx() << 14;
         let bytes: [u8; 4] = b.to_be_bytes();
         f32::from_be_bytes(bytes)
+    }
+}
+
+impl Debug for LvmInstruction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
@@ -241,7 +248,7 @@ impl Display for LvmInstruction {
                 self.argc_rk()
             ),
             OpCode::ForLoop => write!(f, "FORLOOP R{} {}", self.arga(), self.argsbx()),
-            OpCode::Call => write!(f, "CALL R{} {} {}", self.arga(), self.argb(), self.argc()),
+            OpCode::Call => write!(f, "CALL R{} {} {}", self.arga(), self.argb() as i32 - 1, self.argc() as i32 - 1),
             OpCode::Le => write!(
                 f,
                 "LE {} {} {}",
@@ -364,6 +371,7 @@ impl DValue {
     }
 }
 
+#[derive(Debug)]
 pub struct Function {
     pub source: String,
     pub line_defined: u32,

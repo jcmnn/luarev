@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    ops::Add,
     rc::{Rc, Weak},
 };
 
@@ -13,6 +14,7 @@ pub enum Value {
     None,
     Constant(Constant),
     Number(f32),
+    Boolean(bool),
     Add {
         left: SymbolRef,
         right: SymbolRef,
@@ -29,6 +31,18 @@ pub enum Value {
         left: SymbolRef,
         right: SymbolRef,
     },
+    Mod {
+        left: SymbolRef,
+        right: SymbolRef,
+    },
+    Pow {
+        left: SymbolRef,
+        right: SymbolRef,
+    },
+    Nil,
+    Not(SymbolRef),
+    Unm(SymbolRef),
+    Len(SymbolRef),
     Return(SymbolWeakRef),
     Call {
         func: SymbolRef,
@@ -39,6 +53,11 @@ pub enum Value {
         table: SymbolRef,
         key: SymbolRef,
     },
+    SetTable {
+        table: SymbolRef,
+        key: SymbolRef,
+        value: SymbolRef,
+    },
     Closure {
         index: usize,
         upvalues: Vec<SymbolRef>,
@@ -46,8 +65,12 @@ pub enum Value {
     Table {
         items: Vec<Option<SymbolRef>>,
     },
+    Upvalue,
+    ForIndex,
+    SetUpvalue(SymbolRef, SymbolRef),
     Global(Constant),
     SetGlobal(Constant, SymbolRef),
+    SetCGlobal(Constant, SymbolRef),
     VarArg,
     Concat(Vec<SymbolRef>),
     Unknown(StackId),
@@ -134,8 +157,16 @@ impl Symbol {
         Self::new(Value::None)
     }
 
+    pub fn nil() -> SymbolRef {
+        Self::new(Value::Nil)
+    }
+
     pub fn add_reference(&mut self, reference: &SymbolRef) {
         self.references.push(Rc::downgrade(reference));
+    }
+
+    pub fn boolean(val: bool) -> SymbolRef {
+        Self::new(Value::Boolean(val))
     }
 
     pub fn add(left: SymbolRef, right: SymbolRef) -> SymbolRef {
@@ -148,6 +179,16 @@ impl Symbol {
         sum
     }
 
+    pub fn sub(left: SymbolRef, right: SymbolRef) -> SymbolRef {
+        let res = Symbol::new(Value::Sub {
+            left: left.clone(),
+            right: right.clone(),
+        });
+        left.borrow_mut().add_reference(&res);
+        right.borrow_mut().add_reference(&res);
+        res
+    }
+
     pub fn div(left: SymbolRef, right: SymbolRef) -> SymbolRef {
         let sum = Symbol::new(Value::Div {
             left: left.clone(),
@@ -156,6 +197,36 @@ impl Symbol {
         left.borrow_mut().add_reference(&sum);
         right.borrow_mut().add_reference(&sum);
         sum
+    }
+
+    pub fn mul(left: SymbolRef, right: SymbolRef) -> SymbolRef {
+        let res = Symbol::new(Value::Mul {
+            left: left.clone(),
+            right: right.clone(),
+        });
+        left.borrow_mut().add_reference(&res);
+        right.borrow_mut().add_reference(&res);
+        res
+    }
+
+    pub fn modulus(left: SymbolRef, right: SymbolRef) -> SymbolRef {
+        let res = Symbol::new(Value::Mod {
+            left: left.clone(),
+            right: right.clone(),
+        });
+        left.borrow_mut().add_reference(&res);
+        right.borrow_mut().add_reference(&res);
+        res
+    }
+
+    pub fn pow(left: SymbolRef, right: SymbolRef) -> SymbolRef {
+        let res = Symbol::new(Value::Pow {
+            left: left.clone(),
+            right: right.clone(),
+        });
+        left.borrow_mut().add_reference(&res);
+        right.borrow_mut().add_reference(&res);
+        res
     }
 
     pub fn closure(index: usize, upvalues: Vec<SymbolRef>) -> SymbolRef {
@@ -182,15 +253,65 @@ impl Symbol {
     }
 
     pub fn gettable(table: SymbolRef, key: SymbolRef) -> SymbolRef {
-        let val = Self::new(Value::GetTable {table: table.clone(), key: key.clone()});
+        let val = Self::new(Value::GetTable {
+            table: table.clone(),
+            key: key.clone(),
+        });
         table.borrow_mut().add_reference(&val);
         key.borrow_mut().add_reference(&val);
+        val
+    }
+
+    pub fn settable(table: SymbolRef, key: SymbolRef, value: SymbolRef) -> SymbolRef {
+        let val = Self::new(Value::SetTable {
+            table: table.clone(),
+            key: key.clone(),
+            value: value.clone(),
+        });
+        table.borrow_mut().add_reference(&val);
+        key.borrow_mut().add_reference(&val);
+        value.borrow_mut().add_reference(&val);
         val
     }
 
     pub fn set_global(key: Constant, value: SymbolRef) -> SymbolRef {
         let res = Self::new(Value::SetGlobal(key, value.clone()));
         value.borrow_mut().add_reference(&res);
+        res
+    }
+
+    pub fn set_cglobal(key: Constant, value: SymbolRef) -> SymbolRef {
+        let res = Self::new(Value::SetCGlobal(key, value.clone()));
+        value.borrow_mut().add_reference(&res);
+        res
+    }
+
+    pub fn upvalue() -> SymbolRef {
+        Self::new(Value::Upvalue)
+    }
+
+    pub fn set_upvalue(upvalue: SymbolRef, value: SymbolRef) -> SymbolRef {
+        let res = Self::new(Value::SetUpvalue(upvalue.clone(), value.clone()));
+        upvalue.borrow_mut().add_reference(&res);
+        value.borrow_mut().add_reference(&res);
+        res
+    }
+
+    pub fn not(org: SymbolRef) -> SymbolRef {
+        let res = Self::new(Value::Not(org.clone()));
+        org.borrow_mut().add_reference(&res);
+        res
+    }
+
+    pub fn unm(org: SymbolRef) -> SymbolRef {
+        let res = Self::new(Value::Unm(org.clone()));
+        org.borrow_mut().add_reference(&res);
+        res
+    }
+
+    pub fn len(org: SymbolRef) -> SymbolRef {
+        let res = Self::new(Value::Len(org.clone()));
+        org.borrow_mut().add_reference(&res);
         res
     }
 }
@@ -217,7 +338,16 @@ impl From<usize> for StackId {
     }
 }
 
+impl<T: Into<StackId>> Add<T> for StackId {
+    type Output = StackId;
+
+    fn add(self, rhs: T) -> Self::Output {
+        StackId(self.0 + rhs.into().0)
+    }
+}
+
 // Context of IR instructions
+#[derive(Debug)]
 pub struct IrContext {
     // Symbols on the stack
     stack: Vec<Option<SymbolRef>>,
@@ -237,7 +367,7 @@ impl IrContext {
 
     pub fn set_stack(&mut self, idx: StackId, val: SymbolRef) {
         if idx.0 >= self.stack.len() {
-            self.stack.resize(idx.0, None);
+            self.stack.resize(idx.0 + 1, None);
         }
         self.stack[idx.0] = Some(val);
     }
@@ -292,24 +422,39 @@ impl IrContext {
         &mut self,
         func: SymbolRef,
         param_base: StackId,
-        param_count: usize,
+        param_count: i32,
         return_base: StackId,
-        return_count: usize,
+        return_count: i32,
     ) -> SymbolRef {
-        let params = (0..param_count)
-            .map(|p| self.get_stack(StackId::from(param_base.0 + p)))
-            .collect();
-        let c = self.add_symbol(Symbol::call(func, params, return_count));
+        let params = match param_count {
+            -1 => {
+                // TODO: Check if top of stack is vararg
+                [Symbol::new(Value::VarArg)].to_vec()
+            }
+            _ => (0..param_count as usize)
+                .map(|p| self.get_stack(StackId::from(param_base.0 + p)))
+                .collect(),
+        };
+
+        let c = self.add_symbol(Symbol::call(
+            func,
+            params,
+            if return_count == -1 {
+                1
+            } else {
+                return_count as usize
+            },
+        ));
 
         // Then add return values
         if let Value::Call {
             func: _,
-            params,
-            returns: _,
+            params: _,
+            returns,
         } = &c.borrow().value
         {
-            for p in params {
-                self.set_stack(StackId::from(return_base.0 + return_count), p.clone());
+            for (ri, p) in returns.iter().enumerate() {
+                self.set_stack(StackId::from(return_base.0 + ri), p.clone());
             }
         };
         c
@@ -331,6 +476,7 @@ impl IrContext {
     }
 
     pub fn set_global(&mut self, key: Constant, val: StackId) {
-        self.add_symbol(Symbol::set_global(key, self.get_stack(val)));
+        let val = self.get_stack(val);
+        self.add_symbol(Symbol::set_global(key, val));
     }
 }
