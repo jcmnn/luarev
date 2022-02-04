@@ -15,6 +15,7 @@ pub enum Value {
     Constant(Constant),
     Number(f32),
     Boolean(bool),
+    Param,
     Add {
         left: SymbolRef,
         right: SymbolRef,
@@ -43,38 +44,41 @@ pub enum Value {
     Not(SymbolRef),
     Unm(SymbolRef),
     Len(SymbolRef),
-    Return(SymbolWeakRef),
-    Call {
-        func: SymbolRef,
-        params: Vec<SymbolRef>,
-        returns: Vec<SymbolRef>,
-    },
+    Return(SymbolWeakRef, bool),
     GetTable {
         table: SymbolRef,
         key: SymbolRef,
     },
-    SetTable {
-        table: SymbolRef,
-        key: SymbolRef,
-        value: SymbolRef,
-    },
     Closure {
         index: usize,
-        upvalues: Vec<SymbolRef>,
     },
     Table {
         items: Vec<Option<SymbolRef>>,
     },
     Upvalue,
     ForIndex,
-    SetUpvalue(SymbolRef, SymbolRef),
     Global(Constant),
-    SetGlobal(Constant, SymbolRef),
-    SetCGlobal(Constant, SymbolRef),
-    VarArg,
+    VarArgs,
+    Arg(SymbolWeakRef),
     Concat(Vec<SymbolRef>),
     Unknown(StackId),
     ResolvedUnknown(Vec<SymbolRef>), // Vector of all possible symbols
+
+    // Operations:
+    Call {
+        func: SymbolRef,
+        params: Vec<SymbolRef>,
+        returns: Vec<SymbolRef>,
+    },
+    SetGlobal(Constant, SymbolRef),
+    SetCGlobal(Constant, SymbolRef),
+    SetUpvalue(SymbolRef, SymbolRef),
+    SetTable {
+        table: SymbolRef,
+        key: SymbolRef,
+        value: SymbolRef,
+    },
+    GetVarArgs(Vec<SymbolRef>),
 }
 
 // IR Symbol
@@ -85,7 +89,7 @@ pub struct Symbol {
     pub references: Vec<SymbolWeakRef>,
     pub label: String,
     // Set to true if the symbol must be evaluated where it is defined (e.g. for upvalues)
-    pub must_define: bool,
+    pub force_define: bool,
 }
 
 impl Symbol {
@@ -94,8 +98,29 @@ impl Symbol {
             value,
             references: Vec::new(),
             label: String::new(),
-            must_define: false,
+            force_define: false,
         }))
+    }
+
+    // Returns true if this symbol is a variable type
+    pub fn is_var(&self) -> bool {
+        matches!(self.value, Value::VarArgs | Value::Return(_, true))
+    }
+
+    // Returns true if this symbol must be defined on its own line
+    pub fn must_define(&self) -> bool {
+        if self.force_define || self.references.len() > 1 {
+            return true;
+        }
+        match self.value {
+            Value::Arg(_)
+            | Value::Call {
+                func: _,
+                params: _,
+                returns: _,
+            } => true,
+            _ => false,
+        }
     }
 
     pub fn set_label(&mut self, label: String) {
@@ -126,6 +151,18 @@ impl Symbol {
         }
     }
 
+    pub fn get_varargs(count: usize) -> SymbolRef {
+        let args = (0..count).map(|_| Symbol::none()).collect();
+        let getva = Symbol::new(Value::GetVarArgs(args));
+
+        if let Value::GetVarArgs(args) = &getva.borrow().value {
+            for v in args {
+                v.borrow_mut().value = Value::Arg(Rc::downgrade(&getva));
+            }
+        }
+        getva
+    }
+
     pub fn call(func: SymbolRef, params: Vec<SymbolRef>, return_count: usize) -> SymbolRef {
         let call = Symbol::new(Value::Call {
             func: func.clone(),
@@ -139,10 +176,10 @@ impl Symbol {
             func: _,
             params,
             returns,
-        } = &call.borrow_mut().value
+        } = &call.borrow().value
         {
             for r in returns {
-                r.borrow_mut().value = Value::Return(Rc::downgrade(&call));
+                r.borrow_mut().value = Value::Return(Rc::downgrade(&call), false);
             }
             for param in params {
                 param.borrow_mut().add_reference(&call);
@@ -229,15 +266,14 @@ impl Symbol {
         res
     }
 
-    pub fn closure(index: usize, upvalues: Vec<SymbolRef>) -> SymbolRef {
+    pub fn closure(index: usize, upvalues: &[SymbolRef]) -> SymbolRef {
         // Force upvalues to be evaluated before closure
         let val = Self::new(Value::Closure {
             index,
-            upvalues: upvalues.clone(),
         });
-        for upval in &upvalues {
+        for upval in upvalues {
             let mut upval = upval.borrow_mut();
-            upval.must_define = true;
+            upval.force_define = true;
             upval.add_reference(&val);
         }
         val
@@ -350,10 +386,10 @@ impl<T: Into<StackId>> Add<T> for StackId {
 #[derive(Debug)]
 pub struct IrContext {
     // Symbols on the stack
-    stack: Vec<Option<SymbolRef>>,
+    pub stack: Vec<Option<SymbolRef>>,
     // Array of all symbols generated in this context
-    symbols: Vec<SymbolRef>,
-    unknowns: Vec<SymbolRef>,
+    pub symbols: Vec<SymbolRef>,
+    pub unknowns: Vec<SymbolRef>,
 }
 
 impl IrContext {
@@ -370,6 +406,11 @@ impl IrContext {
             self.stack.resize(idx.0 + 1, None);
         }
         self.stack[idx.0] = Some(val);
+    }
+
+    pub fn set_stack_new(&mut self, idx: StackId, val: SymbolRef) {
+        let v = self.add_symbol(val);
+        self.set_stack(idx, v);
     }
 
     pub fn get_stack(&mut self, idx: StackId) -> SymbolRef {
@@ -428,8 +469,24 @@ impl IrContext {
     ) -> SymbolRef {
         let params = match param_count {
             -1 => {
-                // TODO: Check if top of stack is vararg
-                [Symbol::new(Value::VarArg)].to_vec()
+                let mut p = Vec::new();
+                let mut current = param_base.0;
+                // Add values on stack until we find a vararg
+                let mut found_va = false;
+                for offset in param_base.0..self.stack.len() {
+                    let val = self.get_stack(StackId::from(offset));
+                    if val.borrow().is_var() {
+                        p.push(val);
+                        found_va = true;
+                        break;
+                    } else {
+                        p.push(val);
+                    }
+                }
+                if !found_va {
+                    panic!("Failed to find vararg");
+                }
+                p
             }
             _ => (0..param_count as usize)
                 .map(|p| self.get_stack(StackId::from(param_base.0 + p)))
@@ -456,11 +513,17 @@ impl IrContext {
             for (ri, p) in returns.iter().enumerate() {
                 self.set_stack(StackId::from(return_base.0 + ri), p.clone());
             }
+            if return_count == -1 {
+                // Set vararg flag
+                if let Value::Return(_, va) = &mut returns[0].borrow_mut().value {
+                    *va = true;
+                }
+            }
         };
         c
     }
 
-    pub fn closure(&mut self, dst: StackId, index: usize, upvalues: Vec<SymbolRef>) {
+    pub fn closure(&mut self, dst: StackId, index: usize, upvalues: &[SymbolRef]) {
         let val = self.add_symbol(Symbol::closure(index, upvalues));
         self.set_stack(dst, val);
     }
@@ -478,5 +541,16 @@ impl IrContext {
     pub fn set_global(&mut self, key: Constant, val: StackId) {
         let val = self.get_stack(val);
         self.add_symbol(Symbol::set_global(key, val));
+    }
+
+    pub fn get_varargs(&mut self, dst: StackId, count: usize) {
+        let getva = Symbol::get_varargs(count);
+        self.add_symbol(getva.clone());
+        if let Value::GetVarArgs(args) = &getva.borrow().value {
+            for (i, arg) in args.iter().enumerate() {
+                self.set_stack(StackId::from(dst.0 + i), arg.clone());
+                // No need to add symbol
+            }
+        };
     }
 }

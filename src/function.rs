@@ -99,11 +99,11 @@ impl LvmInstruction {
     }
 
     pub fn argb(&self) -> u32 {
-        (self.0 >> 14) & 0x1FF
+        self.0 >> 23
     }
 
     pub fn argc(&self) -> u32 {
-        self.0 >> 23
+        (self.0 >> 14) & 0x1FF
     }
 
     pub fn argb_rk(&self) -> ConstReg {
@@ -192,7 +192,7 @@ impl Display for LvmInstruction {
             OpCode::TForLoop => write!(f, "TFORLOOP R{} {}", self.arga(), self.argc()),
             OpCode::SetUpval => write!(f, "SETUPVAL R{} {}", self.arga(), self.argb()),
             OpCode::Not => write!(f, "NOT R{} R{}", self.arga(), self.argb()),
-            OpCode::Vararg => write!(f, "VARARG R{} {}", self.arga(), self.argb()),
+            OpCode::Vararg => write!(f, "VARARG R{} {}", self.arga(), self.argb() as i32 - 1),
             OpCode::GetUpval => write!(f, "GETUPVAL R{} {}", self.arga(), self.argb()),
             OpCode::Add => write!(
                 f,
@@ -201,7 +201,7 @@ impl Display for LvmInstruction {
                 self.argb_rk(),
                 self.argc_rk()
             ),
-            OpCode::Return => write!(f, "RETURN R{} {}", self.arga(), self.argb()),
+            OpCode::Return => write!(f, "RETURN R{} {}", self.arga(), self.argb() as i32 - 1),
             OpCode::GetGlobal => write!(f, "GETGLOBAL R{} K{}", self.arga(), self.argbx()),
             OpCode::Len => write!(f, "LEN R{} R{}", self.arga(), self.argb()),
             OpCode::Mul => write!(
@@ -381,7 +381,7 @@ pub struct Function {
     pub max_stack_size: u8,
     pub code: Vec<LvmInstruction>,
     pub constants: Vec<Constant>,
-    pub params: Vec<Rc<DValue>>,
+    pub num_params: usize,
     pub closures: Vec<Rc<Function>>,
 }
 
@@ -453,16 +453,6 @@ impl Function {
         let closures = load_closures(&mut *rdr)?;
         load_debug(&mut *rdr)?;
 
-        let mut params = Vec::with_capacity(num_params as usize);
-        for i in 0..num_params {
-            params.push(Rc::new(DValue {
-                value: Value::Param,
-                //instruction_offset: 0,
-                name: RefCell::new(Name::Parameter(format!("param_{}", i))),
-                refcount: Cell::new(0),
-            }));
-        }
-
         Ok(Rc::new(Function {
             source,
             line_defined,
@@ -472,7 +462,7 @@ impl Function {
             max_stack_size,
             code,
             constants,
-            params,
+            num_params: num_params as usize,
             closures,
         }))
     }
@@ -486,7 +476,7 @@ impl Display for Function {
         writeln!(f, "-- Number upvalues: {}", self.nups)?;
         writeln!(f, "-- Is vararg: {}", self.is_vararg)?;
         writeln!(f, "-- Max stack size: {}", self.max_stack_size)?;
-        writeln!(f, "-- Params: {}", self.params.len())?;
+        writeln!(f, "-- Params: {}", self.num_params)?;
         writeln!(f, "\n-- Constants:")?;
         for (i, c) in self.constants.iter().enumerate() {
             writeln!(f, "{}: {}", i, c)?;
@@ -496,6 +486,12 @@ impl Display for Function {
         for i in &self.code {
             writeln!(f, "{}", i)?;
         }
+
+        writeln!(f, "\n-- Closures:")?;
+        for (i, c) in self.closures.iter().enumerate() {
+            writeln!(f, "-- Closure {}\n{}\n", i, c)?;
+        }
+
 
         Ok(())
     }
