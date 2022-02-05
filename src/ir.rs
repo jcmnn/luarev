@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    collections::HashSet,
     ops::Add,
     rc::{Rc, Weak},
 };
@@ -9,52 +10,28 @@ use crate::function::Constant;
 pub type SymbolRef = Rc<RefCell<Symbol>>;
 pub type SymbolWeakRef = Weak<RefCell<Symbol>>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     None,
     Symbol(Symbol),
     Number(f32),
     Boolean(bool),
     Param,
-    Add {
-        left: Symbol,
-        right: Symbol,
-    },
-    Sub {
-        left: Symbol,
-        right: Symbol,
-    },
-    Div {
-        left: Symbol,
-        right: Symbol,
-    },
-    Mul {
-        left: Symbol,
-        right: Symbol,
-    },
-    Mod {
-        left: Symbol,
-        right: Symbol,
-    },
-    Pow {
-        left: Symbol,
-        right: Symbol,
-    },
+    Add { left: Symbol, right: Symbol },
+    Sub { left: Symbol, right: Symbol },
+    Div { left: Symbol, right: Symbol },
+    Mul { left: Symbol, right: Symbol },
+    Mod { left: Symbol, right: Symbol },
+    Pow { left: Symbol, right: Symbol },
     Nil,
     Not(Symbol),
     Unm(Symbol),
     Len(Symbol),
-    //Return(SymbolWeakRef, bool),
-    GetTable {
-        table: Symbol,
-        key: Symbol,
-    },
-    Closure {
-        index: usize,
-    },
-    Table {
-        items: Vec<Option<Symbol>>,
-    },
+    Return(bool),
+    GetTable { table: Symbol, key: Symbol },
+    Closure { index: usize },
+    Table(TableId),
+    //Table { items: Vec<Option<Symbol>> },
     Upvalue,
     ForIndex,
     Global(Constant),
@@ -65,6 +42,7 @@ pub enum Value {
     ResolvedUnknown(Vec<Symbol>), // Vector of all possible symbols
 }
 
+#[derive(Debug)]
 pub enum Operation {
     SetStack(StackId, Value),
     Call {
@@ -93,7 +71,7 @@ struct Variable {
 }
 
 // IR Symbol
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Symbol {
     Stack(StackId),
     Constant(Constant),
@@ -107,7 +85,7 @@ pub struct Symbol {
     // Set to true if the symbol must be evaluated where it is defined (e.g. for upvalues)
     pub force_define: bool,
 }*/
-
+/*
 impl Symbol {
     pub fn new(value: Value) -> SymbolRef {
         Rc::new(RefCell::new(Symbol {
@@ -366,11 +344,15 @@ impl Symbol {
         org.borrow_mut().add_reference(&res);
         res
     }
-}
+}*/
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of symbol on the stack
 pub struct StackId(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Id of a table
+pub struct TableId(usize);
 
 impl From<u32> for StackId {
     fn from(t: u32) -> Self {
@@ -401,57 +383,56 @@ impl<T: Into<StackId>> Add<T> for StackId {
 // Context of IR instructions
 #[derive(Debug)]
 pub struct IrContext {
-    // Symbols on the stack
-    pub stack: Vec<Option<SymbolRef>>,
+    // The most recent values set on the stack
+    pub stack: Vec<Option<Value>>,
     // Array of all symbols generated in this context
-    pub symbols: Vec<SymbolRef>,
+    pub operations: Vec<Operation>,
     pub unknowns: Vec<SymbolRef>,
-    pub stack_references: Vec<StackId>,
-    pub stack_modified: Vec<StackId>,
+    pub stack_references: HashSet<StackId>,
+    pub stack_modified: HashSet<StackId>,
 }
 
 impl IrContext {
     pub fn new() -> IrContext {
         IrContext {
             stack: Vec::new(),
-            symbols: Vec::new(),
+            operations: Vec::new(),
             unknowns: Vec::new(),
-            stack_references: Vec::new(),
-            stack_modified: Vec::new(),
+            stack_references: HashSet::new(),
+            stack_modified: HashSet::new(),
         }
     }
 
+    #[inline]
+    pub fn add_referenced<T: IntoIterator<Item = Symbol>>(&mut self, ids: T) {
+        self.stack_references
+            .extend(ids.into_iter().filter_map(|s| match s {
+                Symbol::Stack(id) => Some(id),
+                _ => None,
+            }));
+    }
+
+    #[inline]
+    pub fn add_modified<T: IntoIterator<Item = StackId>>(&mut self, ids: T) {
+        self.stack_modified.extend(ids);
+    }
+
+    // Set most recent value on a stack variable
     pub fn set_stack(&mut self, idx: StackId, val: Value) {
         if idx.0 >= self.stack.len() {
             self.stack.resize(idx.0 + 1, None);
         }
-        self.stack[idx.0] = Some(val);
+        self.add_modified([idx]);
+        self.operations.push(Operation::SetStack(idx, val));
     }
 
-    pub fn set_stack_new(&mut self, idx: StackId, val: SymbolRef) {
-        let v = self.add_symbol(val);
-        self.set_stack(idx, v);
-    }
-
-    pub fn get_stack(&mut self, idx: StackId) -> SymbolRef {
-        if idx.0 >= self.stack.len() {
-            self.stack.resize(idx.0, None);
-        }
-
-        let val = &mut self.stack[idx.0];
-
-        match val {
-            Some(x) => x.clone(),
-            None => {
-                let v = Symbol::new(Value::Unknown(idx));
-                self.unknowns.push(v.clone());
-                *val = Some(v.clone());
-                v
-            }
-        }
+    // Get most recent value set on stack
+    pub fn get_stack(&mut self, idx: StackId) -> Option<Value> {
+        self.stack.get(idx.0).unwrap_or(&None).map(|t| t.clone())
     }
 
     // Add symbol to ir history
+    /*
     pub fn add_symbol(&mut self, symbol: SymbolRef) -> SymbolRef {
         self.symbols.push(symbol.clone());
         symbol
@@ -461,46 +442,45 @@ impl IrContext {
     pub fn add(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
         let sum = self.add_symbol(Symbol::add(left, right));
         self.set_stack(dst, sum);
-    }
+    }*/
 
     // Make div symbol
-    pub fn div(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
-        let res = self.add_symbol(Symbol::div(left, right));
-        self.set_stack(dst, res);
+    pub fn div(&mut self, dst: StackId, left: Symbol, right: Symbol) {
+        self.add_referenced([left, right]);
+        self.set_stack(dst, Value::Div { left, right });
     }
 
-    pub fn set_number(&mut self, dst: StackId, n: f32) {
-        let res = self.add_symbol(Symbol::new(Value::Number(n)));
-        self.set_stack(dst, res);
+    pub fn number(&mut self, dst: StackId, n: f32) {
+        self.set_stack(dst, Value::Number(n));
     }
 
+    /*
     pub fn make_constant(&mut self, constant: Constant) -> SymbolRef {
         self.add_symbol(Symbol::new(Value::Constant(constant)))
-    }
+    }*/
 
-    // Make call
-    pub fn call(
+    // Makes a call. If param_count is None, the arguments are vararg
+    // if return_count is None, the call is multiret
+    pub fn call<T: IntoIterator<Item = StackId>>(
         &mut self,
-        func: SymbolRef,
+        func: Symbol,
         param_base: StackId,
-        param_count: i32,
+        param_count: Option<usize>,
         return_base: StackId,
-        return_count: i32,
+        return_count: Option<usize>,
     ) -> SymbolRef {
         let params = match param_count {
-            -1 => {
+            None => {
                 let mut p = Vec::new();
                 let mut current = param_base.0;
                 // Add values on stack until we find a vararg
                 let mut found_va = false;
                 for offset in param_base.0..self.stack.len() {
                     let val = self.get_stack(StackId::from(offset));
-                    if val.borrow().is_var() {
-                        p.push(val);
+                    p.push(Symbol::Stack(StackId::from(offset)));
+                    if matches!(val, Some(Value::VarArgs | Value::Return(true))) {
                         found_va = true;
                         break;
-                    } else {
-                        p.push(val);
                     }
                 }
                 if !found_va {
@@ -508,8 +488,11 @@ impl IrContext {
                 }
                 p
             }
-            _ => (0..param_count as usize)
-                .map(|p| self.get_stack(StackId::from(param_base.0 + p)))
+            Some(count) => (0..count)
+                .map(|p| {
+                    let s = Symbol::Stack(param_base + p);
+                    s
+                })
                 .collect(),
         };
 
