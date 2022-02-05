@@ -12,59 +12,61 @@ pub type SymbolWeakRef = Weak<RefCell<Symbol>>;
 #[derive(Debug)]
 pub enum Value {
     None,
-    Constant(Constant),
+    Symbol(Symbol),
     Number(f32),
     Boolean(bool),
     Param,
     Add {
-        left: SymbolRef,
-        right: SymbolRef,
+        left: Symbol,
+        right: Symbol,
     },
     Sub {
-        left: SymbolRef,
-        right: SymbolRef,
+        left: Symbol,
+        right: Symbol,
     },
     Div {
-        left: SymbolRef,
-        right: SymbolRef,
+        left: Symbol,
+        right: Symbol,
     },
     Mul {
-        left: SymbolRef,
-        right: SymbolRef,
+        left: Symbol,
+        right: Symbol,
     },
     Mod {
-        left: SymbolRef,
-        right: SymbolRef,
+        left: Symbol,
+        right: Symbol,
     },
     Pow {
-        left: SymbolRef,
-        right: SymbolRef,
+        left: Symbol,
+        right: Symbol,
     },
     Nil,
-    Not(SymbolRef),
-    Unm(SymbolRef),
-    Len(SymbolRef),
-    Return(SymbolWeakRef, bool),
+    Not(Symbol),
+    Unm(Symbol),
+    Len(Symbol),
+    //Return(SymbolWeakRef, bool),
     GetTable {
-        table: SymbolRef,
-        key: SymbolRef,
+        table: Symbol,
+        key: Symbol,
     },
     Closure {
         index: usize,
     },
     Table {
-        items: Vec<Option<SymbolRef>>,
+        items: Vec<Option<Symbol>>,
     },
     Upvalue,
     ForIndex,
     Global(Constant),
     VarArgs,
     Arg(SymbolWeakRef),
-    Concat(Vec<SymbolRef>),
+    Concat(Vec<Symbol>),
     Unknown(StackId),
-    ResolvedUnknown(Vec<SymbolRef>), // Vector of all possible symbols
+    ResolvedUnknown(Vec<Symbol>), // Vector of all possible symbols
+}
 
-    // Operations:
+pub enum Operation {
+    SetStack(StackId, Value),
     Call {
         func: SymbolRef,
         params: Vec<SymbolRef>,
@@ -81,8 +83,22 @@ pub enum Value {
     GetVarArgs(Vec<SymbolRef>),
 }
 
+type VariableRef = Rc<Variable>;
+type VariableWeakRef = Weak<Variable>;
+
+struct Variable {
+    pub label: String,
+    pub stack_id: StackId,
+    pub references: Vec<Rc<VariableWeakRef>>,
+}
+
 // IR Symbol
 #[derive(Debug)]
+pub enum Symbol {
+    Stack(StackId),
+    Constant(Constant),
+}
+/*
 pub struct Symbol {
     pub value: Value,
     // Array of symbols that reference this symbol
@@ -90,7 +106,7 @@ pub struct Symbol {
     pub label: String,
     // Set to true if the symbol must be evaluated where it is defined (e.g. for upvalues)
     pub force_define: bool,
-}
+}*/
 
 impl Symbol {
     pub fn new(value: Value) -> SymbolRef {
@@ -390,6 +406,8 @@ pub struct IrContext {
     // Array of all symbols generated in this context
     pub symbols: Vec<SymbolRef>,
     pub unknowns: Vec<SymbolRef>,
+    pub stack_references: Vec<StackId>,
+    pub stack_modified: Vec<StackId>,
 }
 
 impl IrContext {
@@ -398,10 +416,12 @@ impl IrContext {
             stack: Vec::new(),
             symbols: Vec::new(),
             unknowns: Vec::new(),
+            stack_references: Vec::new(),
+            stack_modified: Vec::new(),
         }
     }
 
-    pub fn set_stack(&mut self, idx: StackId, val: SymbolRef) {
+    pub fn set_stack(&mut self, idx: StackId, val: Value) {
         if idx.0 >= self.stack.len() {
             self.stack.resize(idx.0 + 1, None);
         }

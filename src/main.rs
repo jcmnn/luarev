@@ -13,10 +13,11 @@ fn main() {
     let f = function::load_file("/home/jacob/luarev/test.luac").unwrap();
 
     let root = Rc::new(RootContext::new());
-    decompile::decompile(root, f.clone()).unwrap();
 
     {
         let mut file = File::create("/home/jacob/luarev/test.luad").unwrap();
         write!(file, "{}", &f).unwrap();
     }
+
+    decompile::decompile(root, f.clone()).unwrap();
 }

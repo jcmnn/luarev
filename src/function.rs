@@ -119,7 +119,7 @@ impl LvmInstruction {
     }
 
     pub fn argsbx(&self) -> i32 {
-        (self.argbx() as i32) - 0x3FFFF
+        (self.argbx() as i32) - ((1 << 17) - 1) >> 1
     }
 
     pub fn number(&self) -> f32 {

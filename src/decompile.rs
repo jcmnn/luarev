@@ -106,7 +106,7 @@ impl Node {
     }
 
     fn ends_at(&self, end: &Rc<Node>) -> bool {
-
+        false
     }
 
     fn add_next(&self, next: &Rc<Node>) {
@@ -190,7 +190,7 @@ impl Node {
                             let upi = ctx
                                 .func
                                 .code
-                                .get(offset + idx as usize)
+                                .get(offset + 1 + idx as usize)
                                 .ok_or(DecompileError::UnexpectedEnd)?;
                             match upi.opcode()? {
                                 OpCode::GetUpval => Ok(ctx.upvalues[upi.argb() as usize].clone()),
@@ -566,14 +566,18 @@ impl Node {
                 }
             }
 
-            if ctx.branches[offset].len() == 1 && ctx.references[offset].len() <= 1 {
-                offset = ctx.branches[offset][0];
+            if ctx.branches[offset].len() == 1 {
+                let next_offset = ctx.branches[offset][0];
+                if ctx.references[next_offset].len() > 1 {
+                    break;
+                }
+                offset = next_offset;
                 assert!(matches!(self.tail, Tail::None));
             } else {
-                self.last_offset = offset;
                 break;
             }
         }
+        self.last_offset = offset;
         Ok(())
     }
 }
@@ -649,7 +653,8 @@ impl FunctionContext {
     fn analyze_nodes(&mut self) -> Result<(), DecompileError> {
         // Get entry of each node
         let mut heads = HashSet::new();
-        heads.insert(0);
+        println!("Branches: {:?}", self.branches);
+        println!("References: {:?}", self.references);
         for offset in 1..self.func.code.len() {
             if self.references[offset].len() > 1 {
                 heads.insert(offset);
@@ -659,8 +664,23 @@ impl FunctionContext {
             }
         }
 
+        // Create root node.
+        {
+            let mut root_node = Rc::new(Node::new(0));
+            {
+                let node = Rc::get_mut(&mut root_node).unwrap();
+                // Add function parameters to stack
+                for (i, param) in self.params.iter().enumerate() {
+                    node.ir.set_stack(StackId::from(i), param.clone());
+                }
+                node.add_code(self, 0)?;
+            }
+            self.nodes.push(root_node);
+        }
+
         // Create nodes
         for head in heads {
+            println!("Making node at {}", head);
             let mut node = Rc::new(Node::new(head));
             Rc::get_mut(&mut node).unwrap().add_code(self, head)?;
             self.nodes.push(node);
@@ -706,10 +726,14 @@ impl FunctionContext {
                 OpCode::Closure => {
                     let nup = self.func.closures[i.argbx() as usize].nups as usize;
                     self.add_branch(offset, offset + nup + 1)?;
+                    for _ in 0..nup {
+                        iter.next();
+                    }
                 }
                 OpCode::LoadBool => {
                     if i.argc() != 0 {
                         self.add_branch(offset, offset + 2)?;
+                        iter.next();
                     } else {
                         self.add_branch(offset, offset + 1)?;
                     }
@@ -718,6 +742,7 @@ impl FunctionContext {
                     // SETLIST can use the next instruction as a parameter
                     if i.argc() == 0 {
                         self.add_branch(offset, offset + 2)?;
+                        iter.next();
                     } else {
                         self.add_branch(offset, offset + 1)?;
                     }
@@ -773,7 +798,7 @@ impl FunctionContext {
                     self.print_call(&func.borrow(), &params);
                 };
             }
-            _ => println!("unimplemented {:?}", symbol),
+            _ => print!("unimplemented {:?}", symbol),
         }
     }
 
@@ -807,6 +832,18 @@ impl FunctionContext {
                     print!("{}", arg.label);
                 }
                 println!(" = ...");
+            }
+            Value::SetUpvalue(ref upval, ref src) => {
+                {
+                    let mut upval = RefCell::borrow_mut(upval);
+                    if upval.label.is_empty() {
+                        println!("-- FIXME: Upvalue should have been used before here");
+                        upval.label = self.root.make_local();
+                    }
+                    print!("{} = ", upval.label);
+                }
+                self.print_value(&src.borrow());
+                println!();
             }
             Value::Closure { index } => {
                 let closure = &self.closures[index];
@@ -919,7 +956,12 @@ impl FunctionContext {
 
     fn decompile(&mut self) -> Result<(), DecompileError> {
         self.analyze_branches()?;
-        self.analyze_nodes()
+        self.analyze_nodes()?;
+
+        for closure in &mut self.closures {
+            closure.decompile()?;
+        }
+        Ok(())
     }
 }
 
