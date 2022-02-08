@@ -11,7 +11,9 @@ use thiserror::Error;
 
 use crate::{
     function::{Constant, Function, LvmInstruction, Name, OpCode},
-    ir::{IrContext, StackId, Symbol, SymbolRef, Value},
+    ir::{
+        ConstantId, IrContext, OperationId, RegConst, StackId, Tail, UpvalueId, Value, VariableId,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -28,59 +30,19 @@ pub enum DecompileError {
     ExpectedTable,
 }
 
-#[derive(Debug)]
-pub struct ConditionalA {
-    value: SymbolRef,
-    direction: bool,
-    target_1: usize,
-    target_2: usize,
-}
-
-#[derive(Debug)]
-pub struct ConditionalB {
-    left: SymbolRef,
-    right: SymbolRef,
-    direction: bool,
-    target_1: usize,
-    target_2: usize,
-}
-
-#[derive(Debug)]
-pub enum Tail {
-    None,
-    Return(Vec<SymbolRef>),
-    TailCall(SymbolRef),
-    Eq(ConditionalB),
-    Le(ConditionalB),
-    Lt(ConditionalB),
-    TestSet(ConditionalA, SymbolRef),
-    Test(ConditionalA),
-    TForLoop {
-        call: SymbolRef,
-        index: SymbolRef,
-        state: SymbolRef,
-        inner: usize,
-        end: usize,
-    },
-    ForLoop {
-        init: SymbolRef,
-        limit: SymbolRef,
-        step: SymbolRef,
-        idx: SymbolRef,
-        inner: usize,
-        end: usize,
-    },
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Id of a node
+pub struct NodeId(usize);
 
 // Graph node
 #[derive(Debug)]
 pub struct Node {
+    id: NodeId,
     offset: usize,
     last_offset: usize,
     ir: IrContext,
-    tail: Tail,
-    next: RefCell<Vec<Weak<Node>>>,
-    prev: RefCell<Vec<Weak<Node>>>,
+    next: Vec<NodeId>,
+    prev: Vec<NodeId>,
 }
 
 // Returns true if encoded value contains a constant index
@@ -94,14 +56,14 @@ const fn indexk(x: u32) -> usize {
 }
 
 impl Node {
-    fn new(offset: usize) -> Node {
+    fn new(id: NodeId, offset: usize) -> Node {
         Node {
+            id,
             offset,
             last_offset: offset,
             ir: IrContext::new(),
-            tail: Tail::None,
-            next: RefCell::new(Vec::new()),
-            prev: RefCell::new(Vec::new()),
+            next: Vec::new(),
+            prev: Vec::new(),
         }
     }
 
@@ -109,21 +71,21 @@ impl Node {
         false
     }
 
-    fn add_next(&self, next: &Rc<Node>) {
-        self.next.borrow_mut().push(Rc::downgrade(next));
+    fn add_next(&mut self, next: NodeId) {
+        self.next.push(next);
     }
 
-    fn add_prev(&self, prev: &Rc<Node>) {
-        self.prev.borrow_mut().push(Rc::downgrade(prev));
+    fn add_prev(&mut self, prev: NodeId) {
+        self.prev.push(prev);
     }
 
     // Returns value on stack or constant from encoded value
-    fn stack_or_const(&mut self, r: u32, ctx: &FunctionContext) -> SymbolRef {
+    fn stack_or_const(&mut self, r: u32, ctx: &FunctionContext) -> RegConst {
         if isk(r) {
-            return self.ir.make_constant(ctx.func.constants[indexk(r)].clone());
+            return RegConst::Constant(ConstantId(indexk(r))); //(ctx.func.constants[indexk(r)].clone());
         }
 
-        self.ir.get_stack(StackId::from(r))
+        RegConst::Stack(StackId::from(r))
     }
 
     // Adds instructions to graph node
@@ -134,50 +96,9 @@ impl Node {
     ) -> Result<(), DecompileError> {
         loop {
             let i = ctx.func.code[offset];
-            // Decode conditional branch instruction
-            let mut decode_conditionalb = || {
-                let left = self.stack_or_const(i.argb(), ctx);
-                let right = self.stack_or_const(i.argc(), ctx);
-
-                let ijmp = ctx
-                    .func
-                    .code
-                    .get(offset + 1)
-                    .ok_or(DecompileError::UnexpectedEnd)?;
-                if ijmp.opcode()? != OpCode::Jmp {
-                    return Err(DecompileError::ExpectedJmp);
-                }
-
-                let target = offset as i32 + ijmp.argsbx() + 2;
-                Ok(ConditionalB {
-                    left,
-                    right,
-                    direction: i.arga() == 0,
-                    target_1: offset + 2,
-                    target_2: target as usize,
-                })
-            };
 
             // Decode instruction
             match i.opcode()? {
-                OpCode::TailCall => {
-                    let ra = i.arga() as i32;
-                    let nparams = i.argb() as i32 - 1;
-                    let nresults = i.argc() as i32 - 1;
-                    if nresults != -1 {
-                        println!("Tail call is not multiret. LVM will throw");
-                        // not multiret; LVM throws here
-                    }
-                    let func = self.ir.get_stack(StackId::from(ra));
-                    let call = self.ir.call(
-                        func,
-                        StackId::from(ra + 1),
-                        nparams,
-                        StackId::from(ra),
-                        nresults,
-                    );
-                    self.tail = Tail::TailCall(call);
-                }
                 OpCode::Closure => {
                     let bx = i.argbx() as usize;
                     if bx >= ctx.func.closures.len() {
@@ -194,20 +115,24 @@ impl Node {
                                 .ok_or(DecompileError::UnexpectedEnd)?;
                             match upi.opcode()? {
                                 OpCode::GetUpval => Ok(ctx.upvalues[upi.argb() as usize].clone()),
-                                OpCode::Move => Ok(self.ir.get_stack(StackId::from(upi.argb()))),
+                                OpCode::Move => {
+                                    let reg = StackId::from(upi.argb());
+                                    ctx.static_registers.insert(reg);
+                                    Ok(RegConst::Stack(reg))
+                                }
                                 _ => Err(DecompileError::InvalidUpvalue),
                             }
                         })
-                        .collect::<Result<Vec<SymbolRef>, DecompileError>>()?;
+                        .collect::<Result<Vec<RegConst>, DecompileError>>()?;
 
                     // Replace upvalues in closure
                     ctx.closures[bx].upvalues = upvalues; //.extend_from_slice(&upvalues);
 
-                    self.ir
-                        .closure(StackId::from(i.arga()), bx, &ctx.closures[bx].upvalues);
-                }
-                OpCode::Eq => {
-                    self.tail = Tail::Eq(decode_conditionalb()?);
+                    self.ir.closure(
+                        StackId::from(i.arga()),
+                        bx,
+                        ctx.closures[bx].upvalues.clone(),
+                    );
                 }
                 OpCode::Div => {
                     let left = self.stack_or_const(i.argb(), ctx);
@@ -215,22 +140,21 @@ impl Node {
                     self.ir.div(StackId::from(i.arga()), left, right);
                 }
                 OpCode::GetNum => {
-                    self.ir.set_number(StackId::from(i.arga()), i.number());
+                    self.ir.number(StackId::from(i.arga()), i.number());
                 }
                 OpCode::Concat => {
                     let b = i.argb();
                     let c = i.argc();
 
-                    let params: Vec<SymbolRef> = (b..=c)
-                        .map(|x| self.ir.get_stack(StackId::from(x)))
-                        .collect();
+                    let params: Vec<RegConst> =
+                        (b..=c).map(|x| RegConst::Stack(StackId::from(x))).collect();
 
                     self.ir.concat(StackId::from(i.arga()), params);
                 }
                 OpCode::GetTable => {
-                    let table = self.ir.get_stack(StackId::from(i.argb()));
+                    let table = RegConst::Stack(StackId::from(i.argb()));
                     let key = self.stack_or_const(i.argc(), ctx);
-                    self.ir.gettable(StackId::from(i.arga()), table, key);
+                    self.ir.get_table(StackId::from(i.arga()), table, key);
                 }
                 OpCode::SetList => {
                     let mut n = i.argb() as usize;
@@ -248,13 +172,10 @@ impl Node {
                     };
                     assert!(c != 0);
 
-                    let table = self.ir.get_stack(StackId::from(ra));
-                    let mut table_ref = RefCell::borrow_mut(&table);
-                    let items = match &mut table_ref.value {
-                        Value::Table { items } => items,
-                        _ => return Err(DecompileError::ExpectedTable),
-                    };
+                    let table = StackId::from(ra);
+                    self.ir.set_list(table, (c - 1) * 50, n);
 
+                    /*
                     if n == 0 {
                         // Search stack for vararg
                         for j in (ra + 1)..self.ir.stack.len() {
@@ -279,37 +200,29 @@ impl Node {
                         RefCell::borrow_mut(&val).add_reference(&table);
                         items[last - 1] = Some(val);
                         last -= 1;
-                    }
+                    }*/
                 }
                 OpCode::LoadK => {
-                    let val = self
-                        .ir
-                        .make_constant(ctx.func.constants[i.argbx() as usize].clone());
-                    self.ir.set_stack(StackId::from(i.arga()), val);
+                    self.ir.load_constant(
+                        StackId::from(i.arga()),
+                        ConstantId(i.argbx() as usize),
+                        // ctx.func.constants[i.argbx() as usize].clone(),
+                    );
                 }
                 OpCode::SetGlobal => {
-                    let cval = ctx.func.constants[i.argbx() as usize].clone();
-                    self.ir.set_global(cval, StackId::from(i.arga()));
+                    let cval = ConstantId(i.argbx() as usize); // ctx.func.constants[i.argbx() as usize].clone();
+                    self.ir
+                        .set_global(cval, RegConst::Stack(StackId::from(i.arga())));
+                }
+                OpCode::SetCGlobal => {
+                    let key = ConstantId(i.argbx() as usize); // ctx.func.constants[i.argbx() as usize].clone();
+                    self.ir
+                        .set_cglobal(key, RegConst::Stack(StackId::from(i.arga())));
                 }
                 OpCode::Jmp => {}
                 OpCode::TForLoop => {
-                    let ra = i.arga() as usize;
-                    let index = self.ir.get_stack(StackId::from(ra + 2));
-                    let state = self.ir.get_stack(StackId::from(ra + 1));
-                    let func = self.ir.get_stack(StackId::from(ra));
+                    let ra = StackId::from(i.arga());
                     let nresults = i.argc() as i32;
-
-                    //self.stack.set(ra + 3, func.clone());
-                    //self.stack.set(ra + 4, state);
-                    //self.stack.set(ra + 5, index);
-
-                    let call = self.ir.call(
-                        func,
-                        StackId::from(ra + 1),
-                        2,
-                        StackId::from(ra + 3),
-                        nresults,
-                    );
 
                     let nexti = ctx
                         .func
@@ -317,39 +230,39 @@ impl Node {
                         .get(offset + 1)
                         .ok_or(DecompileError::UnexpectedEnd)?;
                     let target = ((offset as i32) + 2 + nexti.argsbx()) as usize;
-                    self.tail = Tail::TForLoop {
-                        call,
-                        index,
-                        state,
-                        inner: target,
-                        end: offset + 2,
-                    };
+
+                    self.ir.tail_tforloop(
+                        ra,
+                        if nresults == -1 {
+                            None
+                        } else {
+                            Some(nresults as usize)
+                        },
+                        target,
+                        offset + 2,
+                    );
                 }
                 OpCode::SetUpval => {
-                    let src = self.ir.get_stack(StackId::from(i.arga()));
-                    let upvalue = ctx.upvalues[i.argb() as usize].clone();
-                    self.ir.add_symbol(Symbol::set_upvalue(upvalue, src));
+                    let src = RegConst::Stack(StackId::from(i.arga()));
+                    self.ir.set_upvalue(UpvalueId::from(i.argb() as usize), src);
                 }
                 OpCode::Not => {
-                    let res = Symbol::not(self.ir.get_stack(StackId::from(i.argb())));
-                    self.ir.set_stack_new(StackId::from(i.arga()), res);
+                    self.ir.not(
+                        StackId::from(i.arga()),
+                        RegConst::Stack(StackId::from(i.argb())),
+                    );
                 }
                 OpCode::Vararg => {
                     let ra = i.arga();
                     let b = i.argb() as i32 - 1;
-                    if b == -1 {
-                        // Multret
-                        self.ir
-                            .set_stack_new(StackId::from(ra), Symbol::new(Value::VarArgs));
-                    } else {
-                        self.ir.get_varargs(StackId::from(ra), b as usize);
-                    }
+                    self.ir.get_varargs(
+                        StackId::from(ra),
+                        if b == -1 { None } else { Some(b as usize) },
+                    )
                 }
                 OpCode::GetUpval => {
-                    self.ir.set_stack(
-                        StackId::from(i.arga()),
-                        ctx.upvalues[i.argb() as usize].clone(),
-                    );
+                    self.ir
+                        .get_upvalue(StackId::from(i.arga()), UpvalueId::from(i.argb() as usize));
                 }
                 OpCode::Add => {
                     let left = self.stack_or_const(i.argb(), ctx);
@@ -357,124 +270,81 @@ impl Node {
                     self.ir.add(StackId::from(i.arga()), left, right);
                 }
                 OpCode::Return => {
-                    let ra = i.arga() as usize;
+                    let ra = StackId::from(i.arga());
                     let nresults = i.argb() as i32 - 1;
-                    let mut results = Vec::new();
-                    if nresults == -1 {
-                        // Add results until we find a variable type on the stack or reach the top
-                        for j in ra..self.ir.stack.len() {
-                            let val = self.ir.get_stack(StackId::from(j));
-                            if val.borrow().is_var() {
-                                results.push(val);
-                                break;
-                            } else {
-                                results.push(val);
-                            }
-                        }
-                    } else {
-                        results.reserve(nresults as usize);
-                        for j in 0..nresults {
-                            results.push(self.ir.get_stack(StackId::from(ra as i32 + j)));
-                        }
-                    }
-                    self.tail = Tail::Return(results);
+                    self.ir.tail_return(
+                        ra,
+                        if nresults == -1 {
+                            None
+                        } else {
+                            Some(nresults as usize)
+                        },
+                    );
                 }
                 OpCode::GetGlobal => {
-                    let cval = ctx.func.constants[i.argbx() as usize].clone();
-                    let global = Symbol::new(Value::Global(cval));
-                    self.ir.set_stack_new(StackId::from(i.arga()), global);
+                    let key = ConstantId(i.argbx() as usize); // ctx.func.constants[i.argbx() as usize].clone();
+                    self.ir.get_global(StackId::from(i.arga()), key);
                 }
                 OpCode::Len => {
-                    let src = self.ir.get_stack(StackId::from(i.argb()));
-                    let val = Symbol::len(src);
-                    self.ir.set_stack_new(StackId::from(i.arga()), val);
+                    self.ir.len(
+                        StackId::from(i.arga()),
+                        RegConst::Stack(StackId::from(i.argb())),
+                    );
                 }
                 OpCode::Mul => {
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
-                    let val = Symbol::mul(left, right);
-                    self.ir.set_stack_new(StackId::from(i.arga()), val);
+                    self.ir.mul(StackId::from(i.arga()), left, right);
                 }
                 OpCode::NewTable => {
-                    let table = Symbol::new(Value::Table { items: Vec::new() });
-                    RefCell::borrow_mut(&table).force_define = true; // For debugging
-                    self.ir.set_stack_new(StackId::from(i.arga()), table);
-                }
-                OpCode::TestSet => {
-                    let test = self.ir.get_stack(StackId::from(i.argb()));
-                    let original = self.ir.get_stack(StackId::from(i.arga()));
-                    RefCell::borrow_mut(&original).add_reference(&test);
-
-                    let ijmp = ctx
-                        .func
-                        .code
-                        .get(offset + 1)
-                        .ok_or(DecompileError::UnexpectedEnd)?;
-                    if ijmp.opcode()? != OpCode::Jmp {
-                        return Err(DecompileError::ExpectedJmp);
-                    }
-
-                    let target = offset as i32 + ijmp.argsbx() + 2;
-                    self.tail = Tail::TestSet(
-                        ConditionalA {
-                            value: test,
-                            direction: i.arga() == 0,
-                            target_1: offset + 2,
-                            target_2: target as usize,
-                        },
-                        original,
-                    );
+                    self.ir.new_table(StackId::from(i.arga()));
                 }
                 OpCode::SetTable => {
-                    let table = self.ir.get_stack(StackId::from(i.arga()));
+                    let table = RegConst::Stack(StackId::from(i.arga()));
                     let key = self.stack_or_const(i.argb(), ctx);
                     let value = self.stack_or_const(i.argc(), ctx);
-
-                    self.ir.add_symbol(Symbol::settable(table, key, value));
+                    self.ir.set_table(table, key, value);
                 }
                 OpCode::Unm => {
-                    let src = self.ir.get_stack(StackId::from(i.argb()));
-                    let val = Symbol::unm(src);
-                    self.ir.set_stack_new(StackId::from(i.arga()), val);
+                    self.ir.unm(
+                        StackId::from(i.arga()),
+                        RegConst::Stack(StackId::from(i.argb())),
+                    );
                 }
                 OpCode::Mod => {
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
-                    let val = Symbol::modulus(left, right);
-                    self.ir.set_stack_new(StackId::from(i.arga()), val);
-                }
-                OpCode::Lt => {
-                    self.tail = Tail::Lt(decode_conditionalb()?);
+                    self.ir.modulus(StackId::from(i.arga()), left, right);
                 }
                 OpCode::ForLoop => {
-                    let ra = i.arga() as usize;
-                    let step = self.ir.get_stack(StackId::from(ra + 2));
-                    let limit = self.ir.get_stack(StackId::from(ra + 1));
-                    let init = self.ir.get_stack(StackId::from(ra));
+                    let ra = StackId::from(i.arga());
+                    let step = RegConst::Stack(ra + 2_usize);
+                    let limit = RegConst::Stack(ra + 1_usize);
+                    let init = RegConst::Stack(ra);
 
-                    let idx = Symbol::new(Value::ForIndex);
                     let target = (offset as i32 + 1 + i.argsbx()) as usize;
-
-                    self.tail = Tail::ForLoop {
-                        init,
-                        limit,
-                        step,
-                        idx,
-                        inner: target,
-                        end: offset + 1,
-                    };
+                    self.ir
+                        .tail_forloop(step, limit, init, ra + 3_usize, target, offset + 1)
                 }
                 OpCode::Call => {
                     let ra = i.arga() as usize;
-                    let func = self.ir.get_stack(StackId::from(ra));
+                    let func = RegConst::Stack(StackId::from(ra));
                     let nparams = i.argb() as i32 - 1;
                     let nresults = i.argc() as i32 - 1;
                     self.ir.call(
                         func,
                         StackId::from(ra + 1),
-                        nparams,
+                        if nparams == -1 {
+                            None
+                        } else {
+                            Some(nparams as usize)
+                        },
                         StackId::from(ra),
-                        nresults,
+                        if nresults == -1 {
+                            None
+                        } else {
+                            Some(nresults as usize)
+                        },
                     );
                     /*
                     let results = match nresults {
@@ -498,23 +368,47 @@ impl Node {
                     let _call = self.make_value(Value::Call(func, params, results));
                     */
                 }
-                OpCode::Le => {
-                    self.tail = Tail::Le(decode_conditionalb()?);
-                }
                 OpCode::LoadBool => {
-                    let val = Symbol::boolean(i.argb() != 0);
-                    self.ir.set_stack_new(StackId::from(i.arga()), val);
+                    self.ir.load_boolean(StackId::from(i.arga()), i.argb() != 0);
                 }
                 OpCode::ForPrep => {
                     // We don't need to do anything here
                 }
-                OpCode::SetCGlobal => {
-                    let cval = ctx.func.constants[i.argbx() as usize].clone();
-                    let src = self.ir.get_stack(StackId::from(i.arga()));
-                    self.ir.add_symbol(Symbol::set_cglobal(cval, src));
+                OpCode::Pow => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    self.ir.pow(StackId::from(i.arga()), left, right);
                 }
-                OpCode::Test => {
-                    let test = self.ir.get_stack(StackId::from(i.arga()));
+                OpCode::OpSelf => {
+                    // TODO: Dedicated self operation
+                    let table = RegConst::Stack(StackId::from(i.argb()));
+                    let key = self.stack_or_const(i.argc(), ctx);
+                    self.ir
+                        .set_stack(StackId::from(i.arga() + 1), Value::Symbol(table));
+                    self.ir.get_table(StackId::from(i.arga()), table, key);
+                }
+                OpCode::Sub => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    self.ir.sub(StackId::from(i.arga()), left, right);
+                }
+                OpCode::Move => {
+                    self.ir
+                        .mov(StackId::from(i.arga()), StackId::from(i.argb()));
+                }
+                OpCode::Close => {}
+                OpCode::LoadNil => {
+                    let ra = i.arga();
+                    let rb = i.argb();
+                    for ri in ra..=rb {
+                        self.ir.load_nil(StackId::from(ri));
+                    }
+                }
+                // Tails
+                OpCode::Eq => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    self.ir.add_referenced(&[left, right]);
 
                     let ijmp = ctx
                         .func
@@ -526,43 +420,103 @@ impl Node {
                     }
 
                     let target = offset as i32 + ijmp.argsbx() + 2;
-                    self.tail = Tail::Test(ConditionalA {
-                        value: test,
-                        direction: i.arga() == 0,
-                        target_1: offset + 2,
-                        target_2: target as usize,
-                    });
+                    self.ir
+                        .tail_eq(left, right, i.arga() == 0, offset + 2, target as usize);
                 }
-                OpCode::Pow => {
+                OpCode::Lt => {
                     let left = self.stack_or_const(i.argb(), ctx);
                     let right = self.stack_or_const(i.argc(), ctx);
-                    self.ir
-                        .set_stack_new(StackId::from(i.arga()), Symbol::pow(left, right));
-                }
-                OpCode::OpSelf => {
-                    let table = self.ir.get_stack(StackId::from(i.argb()));
-                    let key = self.stack_or_const(i.argc(), ctx);
-                    self.ir
-                        .set_stack(StackId::from(i.arga() + 1), table.clone());
-                    self.ir.gettable(StackId::from(i.arga()), table, key);
-                }
-                OpCode::Sub => {
-                    let left = self.stack_or_const(i.argb(), ctx);
-                    let right = self.stack_or_const(i.argc(), ctx);
-                    let val = Symbol::sub(left, right);
-                    self.ir.set_stack_new(StackId::from(i.arga()), val);
-                }
-                OpCode::Move => {
-                    let val = self.ir.get_stack(StackId::from(i.argb()));
-                    self.ir.set_stack(StackId::from(i.arga()), val);
-                }
-                OpCode::Close => {}
-                OpCode::LoadNil => {
-                    let ra = i.arga();
-                    let rb = i.argb();
-                    for ri in ra..=rb {
-                        self.ir.set_stack_new(StackId::from(ri), Symbol::nil());
+                    self.ir.add_referenced(&[left, right]);
+
+                    let ijmp = ctx
+                        .func
+                        .code
+                        .get(offset + 1)
+                        .ok_or(DecompileError::UnexpectedEnd)?;
+                    if ijmp.opcode()? != OpCode::Jmp {
+                        return Err(DecompileError::ExpectedJmp);
                     }
+
+                    let target = offset as i32 + ijmp.argsbx() + 2;
+                    self.ir
+                        .tail_lt(left, right, i.arga() == 0, offset + 2, target as usize);
+                }
+                OpCode::Le => {
+                    let left = self.stack_or_const(i.argb(), ctx);
+                    let right = self.stack_or_const(i.argc(), ctx);
+                    self.ir.add_referenced(&[left, right]);
+
+                    let ijmp = ctx
+                        .func
+                        .code
+                        .get(offset + 1)
+                        .ok_or(DecompileError::UnexpectedEnd)?;
+                    if ijmp.opcode()? != OpCode::Jmp {
+                        return Err(DecompileError::ExpectedJmp);
+                    }
+
+                    let target = offset as i32 + ijmp.argsbx() + 2;
+                    self.ir
+                        .tail_le(left, right, i.arga() == 0, offset + 2, target as usize);
+                }
+                OpCode::TestSet => {
+                    let test = RegConst::Stack(StackId::from(i.argb()));
+                    let dst = StackId::from(i.arga());
+
+                    let ijmp = ctx
+                        .func
+                        .code
+                        .get(offset + 1)
+                        .ok_or(DecompileError::UnexpectedEnd)?;
+                    if ijmp.opcode()? != OpCode::Jmp {
+                        return Err(DecompileError::ExpectedJmp);
+                    }
+
+                    self.ir.tail_testset(
+                        test,
+                        dst,
+                        i.arga() == 0,
+                        offset + 2,
+                        (offset as i32 + ijmp.argsbx() + 2) as usize,
+                    );
+                }
+                OpCode::Test => {
+                    let test = RegConst::Stack(StackId::from(i.arga()));
+                    self.ir.add_referenced(&[test]);
+
+                    let ijmp = ctx
+                        .func
+                        .code
+                        .get(offset + 1)
+                        .ok_or(DecompileError::UnexpectedEnd)?;
+                    if ijmp.opcode()? != OpCode::Jmp {
+                        return Err(DecompileError::ExpectedJmp);
+                    }
+
+                    self.ir.tail_test(
+                        test,
+                        i.arga() == 0,
+                        offset + 2,
+                        (offset as i32 + ijmp.argsbx() + 2) as usize,
+                    );
+                }
+                OpCode::TailCall => {
+                    let ra = StackId::from(i.arga());
+                    let nparams = i.argb() as i32 - 1;
+                    let nresults = i.argc() as i32 - 1;
+                    if nresults != -1 {
+                        println!("Tail call is not multiret. LVM will throw");
+                        // not multiret; LVM throws here
+                    }
+                    self.ir.tail_tailcall(
+                        ra,
+                        if nparams == -1 {
+                            // Vararg
+                            None
+                        } else {
+                            Some(nparams as usize)
+                        },
+                    );
                 }
             }
 
@@ -572,7 +526,7 @@ impl Node {
                     break;
                 }
                 offset = next_offset;
-                assert!(matches!(self.tail, Tail::None));
+                assert!(matches!(self.ir.tail, Tail::None));
             } else {
                 break;
             }
@@ -604,12 +558,14 @@ impl RootContext {
 #[derive(Debug)]
 pub struct FunctionContext {
     func: Rc<Function>,
-    nodes: Vec<Rc<Node>>,
+    nodes: Vec<Node>,
     branches: Vec<Vec<usize>>,
-    params: Vec<SymbolRef>,
+    params: Vec<StackId>,
     references: Vec<Vec<usize>>,
+    // List of registers that must have a static variable throughout the program
+    static_registers: HashSet<StackId>,
     root: Rc<RootContext>,
-    upvalues: Vec<SymbolRef>,
+    upvalues: Vec<RegConst>,
     closures: Vec<FunctionContext>,
 }
 
@@ -618,19 +574,18 @@ impl FunctionContext {
         let branches = vec![Vec::new(); func.code.len()];
         let references = vec![Vec::new(); func.code.len()];
         FunctionContext {
-            upvalues: (0..func.nups).map(|_| Symbol::upvalue()).collect(),
+            upvalues: Vec::new(), //(0..func.nups).map(|_| Symbol::upvalue()).collect(),
             closures: func
                 .closures
                 .iter()
                 .map(|f| FunctionContext::new(root.clone(), f.clone()))
                 .collect(),
-            params: (0..func.num_params)
-                .map(|_| Symbol::new(Value::Param))
-                .collect(),
+            params: (0..func.num_params).map(|i| StackId::from(i)).collect(),
             func,
             nodes: Vec::new(),
             branches,
             references,
+            static_registers: HashSet::new(),
             root,
         }
     }
@@ -646,8 +601,30 @@ impl FunctionContext {
         Ok(())
     }
 
-    fn node_at(&self, offset: usize) -> Option<&Rc<Node>> {
+    fn node_at(&self, offset: usize) -> Option<&Node> {
         self.nodes.iter().find(|&x| x.offset == offset)
+    }
+
+    fn make_variables(&mut self) -> Result<(), DecompileError> {
+        let mut var_cnt = 0;
+        // Add static variables to root node
+        {
+            let root_node = &mut self.nodes[0];
+            // Add function parameters to stack
+            root_node.ir.variables.extend(self.params.iter().map(|p| {
+                var_cnt = var_cnt + 1;
+                (*p, VariableId(var_cnt))
+            }));
+            // Add statics to stack
+            root_node.ir.variables.extend(self.static_registers.iter().map(|r| {
+                var_cnt = var_cnt + 1;
+                (*r, VariableId(var_cnt))
+            }))
+        }
+
+
+
+        Ok(())
     }
 
     fn analyze_nodes(&mut self) -> Result<(), DecompileError> {
@@ -666,32 +643,25 @@ impl FunctionContext {
 
         // Create root node.
         {
-            let mut root_node = Rc::new(Node::new(0));
-            {
-                let node = Rc::get_mut(&mut root_node).unwrap();
-                // Add function parameters to stack
-                for (i, param) in self.params.iter().enumerate() {
-                    node.ir.set_stack(StackId::from(i), param.clone());
-                }
-                node.add_code(self, 0)?;
-            }
+            let mut root_node = Node::new(NodeId(0), 0);
+            root_node.add_code(self, 0)?;
             self.nodes.push(root_node);
         }
 
         // Create nodes
         for head in heads {
             println!("Making node at {}", head);
-            let mut node = Rc::new(Node::new(head));
-            Rc::get_mut(&mut node).unwrap().add_code(self, head)?;
+            let mut node = Node::new(NodeId(self.nodes.len()), head);
+            node.add_code(self, head)?;
             self.nodes.push(node);
         }
 
         // Add next & prev data
-        for node in &self.nodes {
-            for branch in &self.branches[node.last_offset] {
-                let next = self.node_at(*branch).unwrap();
-                node.add_next(next);
-                next.add_prev(node);
+        for id in 0..self.nodes.len() {
+            for branch in &self.branches[self.nodes[id].last_offset] {
+                let next = self.node_at(*branch).unwrap().id;
+                self.nodes[id].add_next(next);
+                self.nodes[next.0].add_prev(NodeId(id));
             }
         }
         Ok(())
@@ -759,6 +729,7 @@ impl FunctionContext {
         Ok(())
     }
 
+    /*
     fn print_value(&self, symbol: &Symbol) {
         if !symbol.label.is_empty() {
             print!("{}", symbol.label);
@@ -802,7 +773,7 @@ impl FunctionContext {
         }
     }
 
-    fn print_call(&self, func: &Symbol, params: &[SymbolRef]) {
+    fn print_call(&self, func: &Symbol, params: &[Symbol]) {
         self.print_value(func);
         print!("(");
         for (i, p) in params.iter().enumerate() {
@@ -902,6 +873,7 @@ impl FunctionContext {
         }
     }
 
+
     fn print_node(&self, node: &Node, printed: &mut HashSet<usize>) {
         if !printed.insert(node.offset) {
             // Already printed
@@ -952,7 +924,7 @@ impl FunctionContext {
     fn print(&self) {
         let mut printed = HashSet::new();
         self.print_node(self.nodes.first().unwrap(), &mut printed);
-    }
+    }*/
 
     fn decompile(&mut self) -> Result<(), DecompileError> {
         self.analyze_branches()?;
@@ -972,7 +944,7 @@ pub fn decompile(root: Rc<RootContext>, func: Rc<Function>) -> Result<(), Decomp
 
     println!("{:#?}", ctx);
 
-    ctx.print();
+    //ctx.print();
 
     //let ctx = FunctionContext { func };
 

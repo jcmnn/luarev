@@ -8,6 +8,7 @@ mod function;
 mod reader;
 mod ir;
 mod decompile;
+mod symeval;
 
 fn main() {
     let f = function::load_file("/home/jacob/luarev/test.luac").unwrap();

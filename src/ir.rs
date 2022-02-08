@@ -1,80 +1,107 @@
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ops::Add,
     rc::{Rc, Weak},
 };
 
+use serde::de::value;
+
 use crate::function::Constant;
 
-pub type SymbolRef = Rc<RefCell<Symbol>>;
-pub type SymbolWeakRef = Weak<RefCell<Symbol>>;
+pub type SymbolRef = Rc<RefCell<RegConst>>;
+pub type SymbolWeakRef = Weak<RefCell<RegConst>>;
 
 #[derive(Debug, Clone)]
 pub enum Value {
     None,
-    Symbol(Symbol),
+    Symbol(RegConst),
     Number(f32),
     Boolean(bool),
     Param,
-    Add { left: Symbol, right: Symbol },
-    Sub { left: Symbol, right: Symbol },
-    Div { left: Symbol, right: Symbol },
-    Mul { left: Symbol, right: Symbol },
-    Mod { left: Symbol, right: Symbol },
-    Pow { left: Symbol, right: Symbol },
+    Add {
+        left: RegConst,
+        right: RegConst,
+    },
+    Sub {
+        left: RegConst,
+        right: RegConst,
+    },
+    Div {
+        left: RegConst,
+        right: RegConst,
+    },
+    Mul {
+        left: RegConst,
+        right: RegConst,
+    },
+    Mod {
+        left: RegConst,
+        right: RegConst,
+    },
+    Pow {
+        left: RegConst,
+        right: RegConst,
+    },
     Nil,
-    Not(Symbol),
-    Unm(Symbol),
-    Len(Symbol),
-    Return(bool),
-    GetTable { table: Symbol, key: Symbol },
-    Closure { index: usize },
+    Not(RegConst),
+    Unm(RegConst),
+    Len(RegConst),
+    Return(OperationId, bool),
+    GetTable {
+        table: RegConst,
+        key: RegConst,
+    },
+    Closure {
+        index: usize,
+        upvalues: Vec<RegConst>,
+    },
     Table(TableId),
     //Table { items: Vec<Option<Symbol>> },
-    Upvalue,
+    Upvalue(UpvalueId),
     ForIndex,
-    Global(Constant),
+    Global(ConstantId),
     VarArgs,
-    Arg(SymbolWeakRef),
-    Concat(Vec<Symbol>),
+    Arg(OperationId),
+    Concat(Vec<RegConst>),
     Unknown(StackId),
-    ResolvedUnknown(Vec<Symbol>), // Vector of all possible symbols
+    ResolvedUnknown(Vec<RegConst>), // Vector of all possible symbols
+}
+
+impl Value {
+    pub fn is_var(&self) -> bool {
+        matches!(*self, Value::VarArgs | Value::Return(_, true))
+    }
 }
 
 #[derive(Debug)]
 pub enum Operation {
     SetStack(StackId, Value),
     Call {
-        func: SymbolRef,
-        params: Vec<SymbolRef>,
-        returns: Vec<SymbolRef>,
+        func: RegConst,
+        params: Vec<RegConst>,
+        returns: Vec<RegConst>,
     },
-    SetGlobal(Constant, SymbolRef),
-    SetCGlobal(Constant, SymbolRef),
-    SetUpvalue(SymbolRef, SymbolRef),
+    SetGlobal(ConstantId, RegConst),
+    SetCGlobal(ConstantId, RegConst),
+    SetUpvalue(UpvalueId, RegConst),
     SetTable {
-        table: SymbolRef,
-        key: SymbolRef,
-        value: SymbolRef,
+        table: RegConst,
+        key: RegConst,
+        value: RegConst,
     },
-    GetVarArgs(Vec<SymbolRef>),
+    GetVarArgs(Vec<RegConst>),
+    SetList(StackId, usize, Vec<RegConst>),
 }
 
-type VariableRef = Rc<Variable>;
-type VariableWeakRef = Weak<Variable>;
-
-struct Variable {
-    pub label: String,
-    pub stack_id: StackId,
-    pub references: Vec<Rc<VariableWeakRef>>,
-}
+#[derive(Debug)]
+pub struct Table(Vec<Option<RegConst>>);
 
 // IR Symbol
-#[derive(Debug, Clone)]
-pub enum Symbol {
+#[derive(Debug, Clone, Copy)]
+pub enum RegConst {
     Stack(StackId),
-    Constant(Constant),
+    Constant(ConstantId),
 }
 /*
 pub struct Symbol {
@@ -348,11 +375,33 @@ impl Symbol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of symbol on the stack
-pub struct StackId(usize);
+pub struct StackId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of a table
 pub struct TableId(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Id of an operation
+pub struct OperationId(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Id of a constant
+pub struct ConstantId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Id of a variable
+pub struct VariableId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Id of an upvalue
+pub struct UpvalueId(usize);
+
+impl From<usize> for UpvalueId {
+    fn from(id: usize) -> Self {
+        UpvalueId(id)
+    }
+}
 
 impl From<u32> for StackId {
     fn from(t: u32) -> Self {
@@ -380,6 +429,50 @@ impl<T: Into<StackId>> Add<T> for StackId {
     }
 }
 
+#[derive(Debug)]
+pub struct ConditionalA {
+    value: RegConst,
+    direction: bool,
+    target_1: usize,
+    target_2: usize,
+}
+
+#[derive(Debug)]
+pub struct ConditionalB {
+    left: RegConst,
+    right: RegConst,
+    direction: bool,
+    target_1: usize,
+    target_2: usize,
+}
+
+#[derive(Debug)]
+pub enum Tail {
+    None,
+    Return(Vec<RegConst>),
+    TailCall(OperationId),
+    Eq(ConditionalB),
+    Le(ConditionalB),
+    Lt(ConditionalB),
+    TestSet(ConditionalA, StackId),
+    Test(ConditionalA),
+    TForLoop {
+        call: OperationId,
+        index: RegConst,
+        state: RegConst,
+        inner: usize,
+        end: usize,
+    },
+    ForLoop {
+        init: RegConst,
+        limit: RegConst,
+        step: RegConst,
+        idx: StackId,
+        inner: usize,
+        end: usize,
+    },
+}
+
 // Context of IR instructions
 #[derive(Debug)]
 pub struct IrContext {
@@ -387,9 +480,12 @@ pub struct IrContext {
     pub stack: Vec<Option<Value>>,
     // Array of all symbols generated in this context
     pub operations: Vec<Operation>,
-    pub unknowns: Vec<SymbolRef>,
+    pub tables: Vec<Table>,
     pub stack_references: HashSet<StackId>,
     pub stack_modified: HashSet<StackId>,
+    // Map of register to variable
+    pub variables: HashMap<StackId, VariableId>,
+    pub tail: Tail,
 }
 
 impl IrContext {
@@ -397,24 +493,42 @@ impl IrContext {
         IrContext {
             stack: Vec::new(),
             operations: Vec::new(),
-            unknowns: Vec::new(),
+            tables: Vec::new(),
             stack_references: HashSet::new(),
             stack_modified: HashSet::new(),
+            variables: HashMap::new(),
+            tail: Tail::None,
         }
     }
 
     #[inline]
-    pub fn add_referenced<T: IntoIterator<Item = Symbol>>(&mut self, ids: T) {
+    pub fn add_referenced<'a, T: 'a + IntoIterator<Item = &'a RegConst>>(&mut self, ids: T) {
         self.stack_references
             .extend(ids.into_iter().filter_map(|s| match s {
-                Symbol::Stack(id) => Some(id),
+                RegConst::Stack(id) if !self.stack_modified.contains(id) => Some(id),
                 _ => None,
             }));
     }
 
     #[inline]
-    pub fn add_modified<T: IntoIterator<Item = StackId>>(&mut self, ids: T) {
+    fn add_modified<T: IntoIterator<Item = StackId>>(&mut self, ids: T) {
         self.stack_modified.extend(ids);
+    }
+
+    // Get last stack symbols from base to the first vararg
+    fn base_to_vararg(&self, base: StackId) -> Vec<RegConst> {
+        let mut symbols = Vec::new();
+        for i in (base.0)..self.stack.len() {
+            symbols.push(RegConst::Stack(StackId::from(i)));
+            if let Some(val) = self.get_stack(StackId::from(i)) {
+                if val.is_var() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        symbols
     }
 
     // Set most recent value on a stack variable
@@ -422,13 +536,22 @@ impl IrContext {
         if idx.0 >= self.stack.len() {
             self.stack.resize(idx.0 + 1, None);
         }
+        self.stack[idx.0] = Some(val.clone());
         self.add_modified([idx]);
         self.operations.push(Operation::SetStack(idx, val));
     }
 
     // Get most recent value set on stack
-    pub fn get_stack(&mut self, idx: StackId) -> Option<Value> {
-        self.stack.get(idx.0).unwrap_or(&None).map(|t| t.clone())
+    pub fn get_stack(&self, idx: StackId) -> Option<&Value> {
+        self.stack.get(idx.0).unwrap_or(&None).as_ref()
+    }
+
+    pub fn table_mut(&mut self, id: TableId) -> Option<&mut Table> {
+        self.tables.get_mut(id.0)
+    }
+
+    pub fn operation(&mut self, id: OperationId) -> Option<&Operation> {
+        self.operations.get(id.0)
     }
 
     // Add symbol to ir history
@@ -438,37 +561,60 @@ impl IrContext {
         symbol
     }
 
-    // Make add symbol
     pub fn add(&mut self, dst: StackId, left: SymbolRef, right: SymbolRef) {
         let sum = self.add_symbol(Symbol::add(left, right));
         self.set_stack(dst, sum);
     }*/
 
-    // Make div symbol
-    pub fn div(&mut self, dst: StackId, left: Symbol, right: Symbol) {
-        self.add_referenced([left, right]);
+    pub fn add(&mut self, dst: StackId, left: RegConst, right: RegConst) {
+        self.add_referenced(&[left, right]);
+        self.set_stack(dst, Value::Add { left, right });
+    }
+
+    pub fn sub(&mut self, dst: StackId, left: RegConst, right: RegConst) {
+        self.add_referenced(&[left, right]);
+        self.set_stack(dst, Value::Sub { left, right });
+    }
+
+    pub fn pow(&mut self, dst: StackId, left: RegConst, right: RegConst) {
+        self.add_referenced(&[left, right]);
+        self.set_stack(dst, Value::Pow { left, right });
+    }
+
+    pub fn mul(&mut self, dst: StackId, left: RegConst, right: RegConst) {
+        self.add_referenced(&[left, right]);
+        self.set_stack(dst, Value::Mul { left, right });
+    }
+
+    pub fn div(&mut self, dst: StackId, left: RegConst, right: RegConst) {
+        self.add_referenced(&[left, right]);
         self.set_stack(dst, Value::Div { left, right });
+    }
+
+    pub fn modulus(&mut self, dst: StackId, left: RegConst, right: RegConst) {
+        self.add_referenced(&[left, right]);
+        self.set_stack(dst, Value::Mod { left, right });
     }
 
     pub fn number(&mut self, dst: StackId, n: f32) {
         self.set_stack(dst, Value::Number(n));
     }
 
-    /*
-    pub fn make_constant(&mut self, constant: Constant) -> SymbolRef {
-        self.add_symbol(Symbol::new(Value::Constant(constant)))
-    }*/
+    pub fn load_constant(&mut self, dst: StackId, constant: ConstantId) {
+        self.set_stack(dst, Value::Symbol(RegConst::Constant(constant)));
+    }
 
     // Makes a call. If param_count is None, the arguments are vararg
     // if return_count is None, the call is multiret
-    pub fn call<T: IntoIterator<Item = StackId>>(
+    pub fn call(
         &mut self,
-        func: Symbol,
+        func: RegConst,
         param_base: StackId,
         param_count: Option<usize>,
         return_base: StackId,
         return_count: Option<usize>,
-    ) -> SymbolRef {
+    ) -> OperationId {
+        self.add_referenced(&[func]);
         let params = match param_count {
             None => {
                 let mut p = Vec::new();
@@ -477,8 +623,8 @@ impl IrContext {
                 let mut found_va = false;
                 for offset in param_base.0..self.stack.len() {
                     let val = self.get_stack(StackId::from(offset));
-                    p.push(Symbol::Stack(StackId::from(offset)));
-                    if matches!(val, Some(Value::VarArgs | Value::Return(true))) {
+                    p.push(RegConst::Stack(StackId::from(offset)));
+                    if matches!(val, Some(Value::VarArgs | Value::Return(_, true))) {
                         found_va = true;
                         break;
                     }
@@ -490,70 +636,299 @@ impl IrContext {
             }
             Some(count) => (0..count)
                 .map(|p| {
-                    let s = Symbol::Stack(param_base + p);
+                    let s = RegConst::Stack(param_base + p);
                     s
                 })
                 .collect(),
         };
+        self.add_referenced(&params);
 
-        let c = self.add_symbol(Symbol::call(
+        let op_id = OperationId(self.operations.len());
+
+        let returns = match return_count {
+            None => {
+                self.set_stack(return_base, Value::Return(op_id, true));
+                [RegConst::Stack(return_base)].to_vec()
+            }
+            Some(count) => (0..count)
+                .map(|i| {
+                    let val = Value::Return(op_id, false);
+                    let return_pos = return_base + i;
+                    self.set_stack(return_pos, val);
+                    RegConst::Stack(return_pos)
+                })
+                .collect(),
+        };
+
+        let c = Operation::Call {
             func,
             params,
-            if return_count == -1 {
-                1
-            } else {
-                return_count as usize
-            },
-        ));
-
-        // Then add return values
-        if let Value::Call {
-            func: _,
-            params: _,
             returns,
-        } = &c.borrow().value
-        {
-            for (ri, p) in returns.iter().enumerate() {
-                self.set_stack(StackId::from(return_base.0 + ri), p.clone());
-            }
-            if return_count == -1 {
-                // Set vararg flag
-                if let Value::Return(_, va) = &mut returns[0].borrow_mut().value {
-                    *va = true;
-                }
-            }
         };
-        c
+        self.operations.push(c);
+        op_id
     }
 
-    pub fn closure(&mut self, dst: StackId, index: usize, upvalues: &[SymbolRef]) {
-        let val = self.add_symbol(Symbol::closure(index, upvalues));
+    pub fn closure(&mut self, dst: StackId, index: usize, upvalues: Vec<RegConst>) {
+        self.add_referenced(&upvalues);
+        let val = Value::Closure { index, upvalues };
         self.set_stack(dst, val);
     }
 
-    pub fn concat(&mut self, dst: StackId, values: Vec<SymbolRef>) {
-        let val = self.add_symbol(Symbol::concat(values));
+    pub fn concat(&mut self, dst: StackId, values: Vec<RegConst>) {
+        self.add_referenced(&values);
+        let val = Value::Concat(values);
         self.set_stack(dst, val);
     }
 
-    pub fn gettable(&mut self, dst: StackId, table: SymbolRef, key: SymbolRef) {
-        let val = self.add_symbol(Symbol::gettable(table, key));
+    pub fn get_table(&mut self, dst: StackId, table: RegConst, key: RegConst) {
+        self.add_referenced(&[table, key]);
+        let val = Value::GetTable { table, key };
         self.set_stack(dst, val);
     }
 
-    pub fn set_global(&mut self, key: Constant, val: StackId) {
-        let val = self.get_stack(val);
-        self.add_symbol(Symbol::set_global(key, val));
+    pub fn set_table(&mut self, table: RegConst, key: RegConst, value: RegConst) {
+        self.add_referenced(&[table, key, value]);
+        self.operations
+            .push(Operation::SetTable { table, key, value });
     }
 
-    pub fn get_varargs(&mut self, dst: StackId, count: usize) {
-        let getva = Symbol::get_varargs(count);
-        self.add_symbol(getva.clone());
-        if let Value::GetVarArgs(args) = &getva.borrow().value {
-            for (i, arg) in args.iter().enumerate() {
-                self.set_stack(StackId::from(dst.0 + i), arg.clone());
-                // No need to add symbol
+    pub fn get_global(&mut self, dst: StackId, key: ConstantId) {
+        self.set_stack(dst, Value::Global(key));
+    }
+
+    pub fn set_global(&mut self, key: ConstantId, val: RegConst) {
+        self.add_referenced(&[val]);
+        self.operations.push(Operation::SetGlobal(key, val));
+    }
+
+    pub fn set_cglobal(&mut self, key: ConstantId, val: RegConst) {
+        self.add_referenced(&[val]);
+        self.operations.push(Operation::SetCGlobal(key, val));
+    }
+
+    pub fn get_varargs(&mut self, dst: StackId, count: Option<usize>) {
+        match count {
+            None => {
+                self.set_stack(dst, Value::VarArgs);
             }
+            Some(count) => {
+                let op_id = OperationId(self.operations.len());
+                let args = (0..count)
+                    .map(|i| {
+                        let pos = dst + i;
+                        self.set_stack(pos, Value::Arg(op_id));
+                        RegConst::Stack(pos)
+                    })
+                    .collect();
+                self.operations.push(Operation::GetVarArgs(args));
+            }
+        }
+    }
+
+    pub fn new_table(&mut self, dst: StackId) {
+        let table_id = TableId(self.tables.len());
+        self.tables.push(Table(Vec::new()));
+        self.set_stack(dst, Value::Table(table_id));
+    }
+
+    pub fn set_list(&mut self, table: StackId, offset: usize, count: usize) {
+        self.add_referenced(&[RegConst::Stack(table)]);
+
+        let symbols: Vec<RegConst> = match count {
+            0 => {
+                // Search stack for vararg
+                let mut symbols = self.base_to_vararg(table + 1);
+                // Reverse for correct ordering
+                symbols.reverse();
+                symbols
+            }
+            _ => (0..count)
+                .rev()
+                .map(|i| RegConst::Stack(table + i))
+                .collect(),
         };
+        assert!(!symbols.is_empty());
+        self.add_referenced(&symbols);
+
+        let op = Operation::SetList(table, offset, symbols);
+    }
+
+    pub fn set_upvalue(&mut self, upvalue: UpvalueId, value: RegConst) {
+        self.add_referenced(&[value]);
+        self.operations.push(Operation::SetUpvalue(upvalue, value));
+    }
+
+    pub fn not(&mut self, dst: StackId, src: RegConst) {
+        self.add_referenced(&[src]);
+        self.set_stack(dst, Value::Not(src));
+    }
+
+    pub fn len(&mut self, dst: StackId, src: RegConst) {
+        self.add_referenced(&[src]);
+        self.set_stack(dst, Value::Len(src));
+    }
+
+    pub fn unm(&mut self, dst: StackId, src: RegConst) {
+        self.add_referenced(&[src]);
+        self.set_stack(dst, Value::Unm(src));
+    }
+
+    pub fn get_upvalue(&mut self, dst: StackId, id: UpvalueId) {
+        self.set_stack(dst, Value::Upvalue(id));
+    }
+
+    pub fn load_boolean(&mut self, dst: StackId, value: bool) {
+        self.set_stack(dst, Value::Boolean(value));
+    }
+
+    pub fn mov(&mut self, dst: StackId, src: StackId) {
+        let src = RegConst::Stack(src);
+        self.add_referenced(&[src]);
+        self.set_stack(dst, Value::Symbol(src));
+    }
+
+    pub fn load_nil(&mut self, dst: StackId) {
+        self.set_stack(dst, Value::Nil);
+    }
+
+    // Returns symbol of forloop index
+    pub fn tail_forloop(
+        &mut self,
+        step: RegConst,
+        limit: RegConst,
+        init: RegConst,
+        idx: StackId,
+        inner: usize,
+        end: usize,
+    ) {
+        self.add_referenced(&[step, limit, init]);
+        self.set_stack(idx, Value::ForIndex);
+        self.tail = Tail::ForLoop {
+            init,
+            limit,
+            step,
+            idx,
+            inner,
+            end,
+        };
+    }
+
+    pub fn tail_eq(
+        &mut self,
+        left: RegConst,
+        right: RegConst,
+        direction: bool,
+        target_1: usize,
+        target_2: usize,
+    ) {
+        self.add_referenced(&[left, right]);
+
+        self.tail = Tail::Eq(ConditionalB {
+            left,
+            right,
+            direction,
+            target_1,
+            target_2,
+        });
+    }
+
+    pub fn tail_lt(
+        &mut self,
+        left: RegConst,
+        right: RegConst,
+        direction: bool,
+        target_1: usize,
+        target_2: usize,
+    ) {
+        self.add_referenced(&[left, right]);
+
+        self.tail = Tail::Lt(ConditionalB {
+            left,
+            right,
+            direction,
+            target_1,
+            target_2,
+        });
+    }
+
+    pub fn tail_le(
+        &mut self,
+        left: RegConst,
+        right: RegConst,
+        direction: bool,
+        target_1: usize,
+        target_2: usize,
+    ) {
+        self.add_referenced(&[left, right]);
+
+        self.tail = Tail::Le(ConditionalB {
+            left,
+            right,
+            direction,
+            target_1,
+            target_2,
+        });
+    }
+
+    pub fn tail_testset(
+        &mut self,
+        test: RegConst,
+        dst: StackId,
+        direction: bool,
+        target_1: usize,
+        target_2: usize,
+    ) {
+        self.add_referenced(&[test, RegConst::Stack(dst)]);
+        self.add_modified([dst]);
+
+        self.tail = Tail::TestSet(ConditionalA {
+            value: test,
+            direction,
+            target_1,
+            target_2,
+        }, dst);
+    }
+
+    pub fn tail_test(
+        &mut self,
+        test: RegConst,
+        direction: bool,
+        target_1: usize,
+        target_2: usize,
+    ) {
+        self.add_referenced(&[test]);
+
+        self.tail = Tail::Test(ConditionalA {
+            value: test,
+            direction,
+            target_1,
+            target_2,
+        });
+    }
+
+    pub fn tail_tailcall(&mut self, func: StackId, nparams: Option<usize>) {
+        let call = self.call(RegConst::Stack(func), func + 1, nparams, func, None);
+        self.tail = Tail::TailCall(call);
+    }
+
+    pub fn tail_tforloop(&mut self, base: StackId, nresults: Option<usize>, inner: usize, end: usize) {
+        let call = self.call(RegConst::Stack(base), base + 1, Some(2), base + 3, nresults);
+        self.tail = Tail::TForLoop {
+            call,
+            index: RegConst::Stack(base + 1),
+            state: RegConst::Stack(base + 2),
+            inner,
+            end,
+        };
+    }
+
+    pub fn tail_return(&mut self, base: StackId, nresults: Option<usize>) {
+        let results = match nresults {
+            None => self.base_to_vararg(base),
+            Some(count) => (0..count).map(|j| RegConst::Stack(base + j)).collect(),
+        };
+        self.add_referenced(&results);
+        self.tail = Tail::Return(results);
     }
 }
