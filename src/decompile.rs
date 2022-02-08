@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
-    cell::{Cell, RefCell},
-    collections::HashSet,
+    cell::{Cell, Ref, RefCell},
+    collections::{HashMap, HashSet},
     ops::Add,
     rc::{Rc, Weak},
 };
@@ -558,7 +558,7 @@ impl RootContext {
 #[derive(Debug)]
 pub struct FunctionContext {
     func: Rc<Function>,
-    nodes: Vec<Node>,
+    nodes: Vec<RefCell<Node>>,
     branches: Vec<Vec<usize>>,
     params: Vec<StackId>,
     references: Vec<Vec<usize>>,
@@ -601,28 +601,63 @@ impl FunctionContext {
         Ok(())
     }
 
-    fn node_at(&self, offset: usize) -> Option<&Node> {
-        self.nodes.iter().find(|&x| x.offset == offset)
+    fn node_at(&self, offset: usize) -> Option<NodeId> {
+        self.nodes
+            .iter()
+            .find(|&x| x.borrow().offset == offset)
+            .map(|x| x.borrow().id)
+    }
+
+    fn propogate_variables(&self, node: NodeId, counter: &mut usize, made: &mut HashSet<NodeId>) {
+        if made.contains(&node) {
+            return;
+        }
+        made.insert(node);
+        let mut node = self.nodes[node.0].borrow_mut();
+        // Propgate all previous nodes first
+        let mut vars: HashMap<StackId, VariableId> = HashMap::new();
+        for i in &node.prev {
+            self.propogate_variables(*i, counter, made);
+            // Add previous node's variables to this node
+            vars.extend(self.nodes[i.0].borrow().ir.variables.iter());
+        }
+
+        // Make local variables
+        for id in &node.ir.stack_modified {
+            if node.ir.stack_references.contains(id) {
+                continue;
+            }
+            vars.insert(*id, VariableId(*counter));
+            *counter = *counter + 1;
+        }
+
+        node.ir.variables.extend(vars);
     }
 
     fn make_variables(&mut self) -> Result<(), DecompileError> {
         let mut var_cnt = 0;
         // Add static variables to root node
         {
-            let root_node = &mut self.nodes[0];
+            let mut root_node = self.nodes[0].borrow_mut();
             // Add function parameters to stack
             root_node.ir.variables.extend(self.params.iter().map(|p| {
                 var_cnt = var_cnt + 1;
                 (*p, VariableId(var_cnt))
             }));
             // Add statics to stack
-            root_node.ir.variables.extend(self.static_registers.iter().map(|r| {
-                var_cnt = var_cnt + 1;
-                (*r, VariableId(var_cnt))
-            }))
+            root_node
+                .ir
+                .variables
+                .extend(self.static_registers.iter().map(|r| {
+                    var_cnt = var_cnt + 1;
+                    (*r, VariableId(var_cnt))
+                }))
         }
 
-
+        let mut made = HashSet::new();
+        for i in 0..self.nodes.len() {
+            self.propogate_variables(NodeId(i), &mut var_cnt, &mut made);
+        }
 
         Ok(())
     }
@@ -645,7 +680,7 @@ impl FunctionContext {
         {
             let mut root_node = Node::new(NodeId(0), 0);
             root_node.add_code(self, 0)?;
-            self.nodes.push(root_node);
+            self.nodes.push(RefCell::new(root_node));
         }
 
         // Create nodes
@@ -653,15 +688,16 @@ impl FunctionContext {
             println!("Making node at {}", head);
             let mut node = Node::new(NodeId(self.nodes.len()), head);
             node.add_code(self, head)?;
-            self.nodes.push(node);
+            self.nodes.push(RefCell::new(node));
         }
 
         // Add next & prev data
         for id in 0..self.nodes.len() {
-            for branch in &self.branches[self.nodes[id].last_offset] {
-                let next = self.node_at(*branch).unwrap().id;
-                self.nodes[id].add_next(next);
-                self.nodes[next.0].add_prev(NodeId(id));
+            let last_offset = self.nodes[id].borrow().last_offset;
+            for branch in &self.branches[last_offset] {
+                let next = self.node_at(*branch).unwrap();
+                self.nodes[id].borrow_mut().add_next(next);
+                self.nodes[next.0].borrow_mut().add_prev(NodeId(id));
             }
         }
         Ok(())
@@ -679,7 +715,7 @@ impl FunctionContext {
                 | OpCode::Test
                 | OpCode::TForLoop => {
                     let (_, next) = iter.next().ok_or(DecompileError::UnexpectedEnd)?;
-                    let target = next.argsbx() as usize + offset + 2;
+                    let target = (offset as i32 + next.argsbx() + 2) as usize;
                     if target >= self.func.code.len() {
                         return Err(DecompileError::UnexpectedEnd);
                     }
@@ -687,10 +723,10 @@ impl FunctionContext {
                     self.add_branch(offset, offset + 2)?;
                 }
                 OpCode::ForPrep | OpCode::Jmp => {
-                    self.add_branch(offset, offset + i.argsbx() as usize + 1)?;
+                    self.add_branch(offset, (offset as i32 + i.argsbx() + 1) as usize)?;
                 }
                 OpCode::ForLoop => {
-                    self.add_branch(offset, offset + i.argsbx() as usize + 1)?;
+                    self.add_branch(offset, (offset as i32 + i.argsbx() + 1) as usize)?;
                     self.add_branch(offset, offset + 1)?;
                 }
                 OpCode::Closure => {
@@ -929,6 +965,7 @@ impl FunctionContext {
     fn decompile(&mut self) -> Result<(), DecompileError> {
         self.analyze_branches()?;
         self.analyze_nodes()?;
+        self.make_variables()?;
 
         for closure in &mut self.closures {
             closure.decompile()?;
