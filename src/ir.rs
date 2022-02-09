@@ -882,21 +882,18 @@ impl IrContext {
         self.add_referenced(&[test, RegConst::Stack(dst)]);
         self.add_modified([dst]);
 
-        self.tail = Tail::TestSet(ConditionalA {
-            value: test,
-            direction,
-            target_1,
-            target_2,
-        }, dst);
+        self.tail = Tail::TestSet(
+            ConditionalA {
+                value: test,
+                direction,
+                target_1,
+                target_2,
+            },
+            dst,
+        );
     }
 
-    pub fn tail_test(
-        &mut self,
-        test: RegConst,
-        direction: bool,
-        target_1: usize,
-        target_2: usize,
-    ) {
+    pub fn tail_test(&mut self, test: RegConst, direction: bool, target_1: usize, target_2: usize) {
         self.add_referenced(&[test]);
 
         self.tail = Tail::Test(ConditionalA {
@@ -912,7 +909,13 @@ impl IrContext {
         self.tail = Tail::TailCall(call);
     }
 
-    pub fn tail_tforloop(&mut self, base: StackId, nresults: Option<usize>, inner: usize, end: usize) {
+    pub fn tail_tforloop(
+        &mut self,
+        base: StackId,
+        nresults: Option<usize>,
+        inner: usize,
+        end: usize,
+    ) {
         let call = self.call(RegConst::Stack(base), base + 1, Some(2), base + 3, nresults);
         self.tail = Tail::TForLoop {
             call,
@@ -930,5 +933,97 @@ impl IrContext {
         };
         self.add_referenced(&results);
         self.tail = Tail::Return(results);
+    }
+
+    pub fn var_label(&self, var: VariableId) -> String {
+        format!("var{}", var.0)
+    }
+
+    pub fn rc_label(&self, rc: RegConst) -> String {
+        match &rc {
+            RegConst::Stack(id) => self.var_label(self.variables[id]),
+            RegConst::Constant(cid) => format!("const{}", cid.0),
+        }
+    }
+
+    pub fn print_value(&self, value: &Value) {
+        match value {
+            Value::None => todo!(),
+            Value::Symbol(rc) => print!("{}", self.rc_label(*rc)),
+            Value::Number(n) => print!("{}", n),
+            Value::Boolean(b) => print!("{}", b),
+            Value::Param => todo!(),
+            Value::Add { left, right } => {
+                print!("{} + {}", self.rc_label(*left), self.rc_label(*right))
+            }
+            Value::Sub { left, right } => {
+                print!("{} - {}", self.rc_label(*left), self.rc_label(*right))
+            }
+            Value::Div { left, right } => {
+                print!("{} / {}", self.rc_label(*left), self.rc_label(*right))
+            }
+            Value::Mul { left, right } => {
+                print!("{} * {}", self.rc_label(*left), self.rc_label(*right))
+            }
+            Value::Mod { left, right } => {
+                print!("{} % {}", self.rc_label(*left), self.rc_label(*right))
+            }
+            Value::Pow { left, right } => {
+                print!("{} ^ {}", self.rc_label(*left), self.rc_label(*right))
+            }
+            Value::Nil => print!("nil"),
+            Value::Not(rc) => print!("not {}", self.rc_label(*rc)),
+            Value::Unm(rc) => print!("-{}", self.rc_label(*rc)),
+            Value::Len(rc) => print!("#{}", self.rc_label(*rc)),
+            Value::Return(_, _) => {}
+            Value::GetTable { table, key } => {
+                print!("{}[{}]", self.rc_label(*table), self.rc_label(*key))
+            }
+            Value::Closure { index, upvalues } => todo!(),
+            Value::Table(tid) => todo!(),
+            Value::Upvalue(_) => todo!(),
+            Value::ForIndex => todo!(),
+            Value::Global(cid) => print!("const{}", cid.0),
+            Value::VarArgs => print!("..."),
+            Value::Arg(_) => todo!(),
+            Value::Concat(rcs) => print!(
+                "{}",
+                rcs.iter()
+                    .map(|rc| self.rc_label(*rc))
+                    .collect::<Vec<String>>()
+                    .join(" .. ")
+            ),
+            Value::Unknown(_) => todo!(),
+            Value::ResolvedUnknown(_) => todo!(),
+        };
+    }
+
+    pub fn print(&self) {
+        for op in &self.operations {
+            match op {
+                Operation::SetStack(stack_id, val) => {
+                    if val.is_var() || matches!(*val, Value::Return(_, _)) {
+                        continue;
+                    }
+                    let var = self.variables[stack_id];
+                    print!("{} = ", self.var_label(var));
+                    self.print_value(val);
+                    println!();
+                }
+                Operation::Call {
+                    func,
+                    params,
+                    returns,
+                } => {
+                    
+                },
+                Operation::SetGlobal(_, _) => todo!(),
+                Operation::SetCGlobal(_, _) => todo!(),
+                Operation::SetUpvalue(_, _) => todo!(),
+                Operation::SetTable { table, key, value } => todo!(),
+                Operation::GetVarArgs(_) => todo!(),
+                Operation::SetList(_, _, _) => todo!(),
+            }
+        }
     }
 }

@@ -613,14 +613,25 @@ impl FunctionContext {
             return;
         }
         made.insert(node);
-        let mut node = self.nodes[node.0].borrow_mut();
         // Propgate all previous nodes first
-        let mut vars: HashMap<StackId, VariableId> = HashMap::new();
-        for i in &node.prev {
+        let node = &self.nodes[node.0];
+        let mut vars: HashMap<StackId, VariableId> = node.borrow_mut().ir.variables.clone();
+        for i in &node.borrow().prev {
             self.propogate_variables(*i, counter, made);
             // Add previous node's variables to this node
-            vars.extend(self.nodes[i.0].borrow().ir.variables.iter());
+            //if node.id != *i {
+                for (stack_id, var) in &self.nodes[i.0].borrow().ir.variables {
+                    if let Some(old) = vars.insert(*stack_id, *var) {
+                        if old != *var {
+                            // TODO: Combine variables here
+                        }   
+                    }
+                }
+                vars.extend(self.nodes[i.0].borrow().ir.variables.iter());
+            //}
         }
+
+        let mut node = node.borrow_mut();
 
         // Make local variables
         for id in &node.ir.stack_modified {
@@ -631,7 +642,7 @@ impl FunctionContext {
             *counter = *counter + 1;
         }
 
-        node.ir.variables.extend(vars);
+        node.ir.variables = vars;
     }
 
     fn make_variables(&mut self) -> Result<(), DecompileError> {
@@ -962,6 +973,10 @@ impl FunctionContext {
         self.print_node(self.nodes.first().unwrap(), &mut printed);
     }*/
 
+    fn print(&self) {
+        self.nodes[0].borrow().ir.print();
+    }
+
     fn decompile(&mut self) -> Result<(), DecompileError> {
         self.analyze_branches()?;
         self.analyze_nodes()?;
@@ -981,7 +996,7 @@ pub fn decompile(root: Rc<RootContext>, func: Rc<Function>) -> Result<(), Decomp
 
     println!("{:#?}", ctx);
 
-    //ctx.print();
+    ctx.print();
 
     //let ctx = FunctionContext { func };
 
