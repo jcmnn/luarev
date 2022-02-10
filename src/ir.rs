@@ -1,6 +1,8 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    io::Cursor,
+    io::Write,
     ops::Add,
     rc::{Rc, Weak},
 };
@@ -81,6 +83,7 @@ pub enum Operation {
         func: RegConst,
         params: Vec<RegConst>,
         returns: Vec<RegConst>,
+        is_multiret: bool,
     },
     SetGlobal(ConstantId, RegConst),
     SetCGlobal(ConstantId, RegConst),
@@ -102,6 +105,8 @@ pub struct Table(Vec<Option<RegConst>>);
 pub enum RegConst {
     Stack(StackId),
     Constant(ConstantId),
+    VarArgs,
+    VarCall(OperationId),
 }
 /*
 pub struct Symbol {
@@ -431,19 +436,19 @@ impl<T: Into<StackId>> Add<T> for StackId {
 
 #[derive(Debug)]
 pub struct ConditionalA {
-    value: RegConst,
-    direction: bool,
-    target_1: usize,
-    target_2: usize,
+    pub value: RegConst,
+    pub direction: bool,
+    pub target_1: usize,
+    pub target_2: usize,
 }
 
 #[derive(Debug)]
 pub struct ConditionalB {
-    left: RegConst,
-    right: RegConst,
-    direction: bool,
-    target_1: usize,
-    target_2: usize,
+    pub left: RegConst,
+    pub right: RegConst,
+    pub direction: bool,
+    pub target_1: usize,
+    pub target_2: usize,
 }
 
 #[derive(Debug)]
@@ -485,6 +490,7 @@ pub struct IrNode {
     pub stack_modified: HashSet<StackId>,
     // Map of register to variable
     pub variables: HashMap<StackId, VariableId>,
+    pub references: HashMap<StackId, VariableId>,
     pub tail: Tail,
 }
 
@@ -497,6 +503,7 @@ impl IrNode {
             stack_references: HashSet::new(),
             stack_modified: HashSet::new(),
             variables: HashMap::new(),
+            references: HashMap::new(),
             tail: Tail::None,
         }
     }
@@ -519,10 +526,17 @@ impl IrNode {
     fn base_to_vararg(&self, base: StackId) -> Vec<RegConst> {
         let mut symbols = Vec::new();
         for i in (base.0)..self.stack.len() {
-            symbols.push(RegConst::Stack(StackId::from(i)));
             if let Some(val) = self.get_stack(StackId::from(i)) {
-                if val.is_var() {
-                    break;
+                match *val {
+                    Value::VarArgs => {
+                        symbols.push(RegConst::VarArgs);
+                        break;
+                    }
+                    Value::Return(call, true) => {
+                        symbols.push(RegConst::VarCall(call));
+                        break;
+                    }
+                    _ => symbols.push(RegConst::Stack(StackId::from(i))),
                 }
             } else {
                 break;
@@ -664,6 +678,7 @@ impl IrNode {
             func,
             params,
             returns,
+            is_multiret: return_count.is_none(),
         };
         self.operations.push(c);
         op_id
@@ -939,10 +954,36 @@ impl IrNode {
         format!("var{}", var.0)
     }
 
+    pub fn call_src(&self, call: OperationId) -> String {
+        let mut buff = Vec::new();
+        if let Operation::Call {
+            func,
+            params,
+            returns,
+            is_multiret,
+        } = &self.operations[call.0]
+        {
+            write!(&mut buff, "{}(", self.rc_label(*func)).unwrap();
+            write!(
+                &mut buff,
+                "{})",
+                params
+                    .iter()
+                    .map(|p| self.rc_label(*p))
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            )
+            .unwrap();
+        }
+        String::from_utf8(buff).unwrap()
+    }
+
     pub fn rc_label(&self, rc: RegConst) -> String {
         match &rc {
             RegConst::Stack(id) => self.var_label(self.variables[id]),
             RegConst::Constant(cid) => format!("const{}", cid.0),
+            RegConst::VarArgs => "...".to_string(),
+            RegConst::VarCall(op) => self.call_src(*op),
         }
     }
 
@@ -999,7 +1040,7 @@ impl IrNode {
     }
 
     pub fn print(&self) {
-        for op in &self.operations {
+        for (op_id, op) in self.operations.iter().enumerate() {
             match op {
                 Operation::SetStack(stack_id, val) => {
                     if val.is_var() || matches!(*val, Value::Return(_, _)) {
@@ -1014,9 +1055,23 @@ impl IrNode {
                     func,
                     params,
                     returns,
+                    is_multiret,
                 } => {
-                    
-                },
+                    if *is_multiret {
+                        continue;
+                    }
+                    if !returns.is_empty() {
+                        print!(
+                            "local {} = ",
+                            returns
+                                .iter()
+                                .map(|p| self.rc_label(*p))
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        );
+                    }
+                    println!("{}", self.call_src(OperationId(op_id)));
+                }
                 Operation::SetGlobal(_, _) => todo!(),
                 Operation::SetCGlobal(_, _) => todo!(),
                 Operation::SetUpvalue(_, _) => todo!(),

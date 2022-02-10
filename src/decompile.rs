@@ -45,6 +45,14 @@ pub struct Node {
     prev: Vec<NodeId>,
 }
 
+#[derive(Debug)]
+pub struct Variable {
+    id: VariableId,
+    register: StackId,
+    references: Vec<NodeId>,
+    modifies: Vec<NodeId>,
+}
+
 // Returns true if encoded value contains a constant index
 const fn isk(x: u32) -> bool {
     (x & (1 << 8)) != 0
@@ -555,6 +563,11 @@ impl RootContext {
     }
 }
 
+struct NodeReferences {
+    uses_from: HashMap<StackId, Vec<NodeId>>,
+    used_by: HashMap<StackId, Vec<NodeId>>,
+}
+
 #[derive(Debug)]
 pub struct FunctionContext {
     func: Rc<Function>,
@@ -567,6 +580,53 @@ pub struct FunctionContext {
     root: Rc<RootContext>,
     upvalues: Vec<RegConst>,
     closures: Vec<FunctionContext>,
+}
+
+#[derive(Debug)]
+pub struct VariableContext {
+    variables: Vec<Option<Variable>>,
+}
+
+impl VariableContext {
+    fn new() -> VariableContext {
+        VariableContext {
+            variables: Vec::new(),
+        }
+    }
+    fn make_variable(&mut self, id: NodeId, register: StackId) -> VariableId {
+        let var_id = VariableId(self.variables.len());
+        self.variables.push(Some(Variable {
+            id: var_id,
+            references: Vec::new(),
+            modifies: [id].to_vec(),
+            register,
+        }));
+        var_id
+    }
+
+    fn make_reference(&mut self, id: NodeId, register: StackId) -> VariableId {
+        let var_id = VariableId(self.variables.len());
+        self.variables.push(Some(Variable {
+            id: var_id,
+            references: [id].to_vec(),
+            modifies: Vec::new(),
+            register,
+        }));
+        var_id
+    }
+
+    fn combine(&mut self, dst: VariableId, src: VariableId) {
+        let Variable {
+            id: _,
+            modifies,
+            references,
+            register: _,
+        } = self.variables[src.0].take().unwrap();
+
+        let dst = self.variables[dst.0].as_mut().unwrap();
+        dst.modifies.extend(modifies);
+        dst.references.extend(references);
+    }
 }
 
 impl FunctionContext {
@@ -608,52 +668,82 @@ impl FunctionContext {
             .map(|x| x.borrow().id)
     }
 
-    fn propogate_variables(&self, node: NodeId, counter: &mut usize, made: &mut HashSet<NodeId>) {
-        if made.contains(&node) {
+    fn propogate_variables(
+        &self,
+        node_id: NodeId,
+        vc: &mut VariableContext,
+        made: &mut HashSet<NodeId>,
+    ) {
+        if made.contains(&node_id) {
             return;
         }
-        made.insert(node);
-        // Propgate all previous nodes first
-        let node = &self.nodes[node.0];
-        let mut vars: HashMap<StackId, VariableId> = node.borrow_mut().ir.variables.clone();
-        for i in &node.borrow().prev {
-            self.propogate_variables(*i, counter, made);
-            // Add previous node's variables to this node
-            //if node.id != *i {
-                for (stack_id, var) in &self.nodes[i.0].borrow().ir.variables {
-                    if let Some(old) = vars.insert(*stack_id, *var) {
-                        if old != *var {
-                            // TODO: Combine variables here
-                        }   
+        made.insert(node_id);
+
+        let mut to_combine = Vec::new();
+        {
+            // Propgate all previous nodes first
+            let node = &self.nodes[node_id.0];
+
+            // Make local variables
+            {
+                let mut n = node.borrow_mut();
+                let vars: HashMap<StackId, VariableId> = HashMap::from_iter(
+                    n.ir.stack_modified
+                        .iter()
+                        .map(|m| (*m, vc.make_variable(node_id, *m))),
+                );
+                n.ir.variables = vars;
+
+                let refs: HashMap<StackId, VariableId> = HashMap::from_iter(
+                    n.ir.stack_references
+                        .iter()
+                        .map(|m| (*m, vc.make_reference(node_id, *m))),
+                );
+                n.ir.references = refs;
+            }
+
+            let mut refs: HashMap<StackId, VariableId> = node.borrow_mut().ir.references.clone();
+            for i in &node.borrow().next {
+                self.propogate_variables(*i, vc, made);
+                // Add next node's references to this node
+                if node_id != *i {
+                    for (stack_id, var) in &self.nodes[i.0].borrow().ir.references {
+                        if node.borrow().ir.stack_modified.contains(stack_id) {
+                            to_combine.push((node.borrow().ir.variables[stack_id], *var, *stack_id));
+                        } else if let Some(old) = refs.insert(*stack_id, *var) {
+                            if old != *var {
+                                to_combine.push((old, *var, *stack_id));
+                            }
+                        }
                     }
                 }
-                vars.extend(self.nodes[i.0].borrow().ir.variables.iter());
-            //}
-        }
-
-        let mut node = node.borrow_mut();
-
-        // Make local variables
-        for id in &node.ir.stack_modified {
-            if node.ir.stack_references.contains(id) {
-                continue;
             }
-            vars.insert(*id, VariableId(*counter));
-            *counter = *counter + 1;
+
+            let mut node = node.borrow_mut();
+            node.ir.references = refs;
         }
 
-        node.ir.variables = vars;
+        for (dst, src, stack_id) in to_combine.iter().rev() {
+            // Combine references
+            for id in &vc.variables[src.0].as_mut().unwrap().references {
+                self.nodes[id.0].borrow_mut().ir.references.insert(*stack_id,*dst);
+            }
+            // Combine modified
+            for id in &vc.variables[src.0].as_mut().unwrap().modifies {
+                self.nodes[id.0].borrow_mut().ir.variables.insert(*stack_id,*dst);
+            }
+            vc.combine(*dst, *src);
+        }
     }
 
-    fn make_variables(&mut self) -> Result<(), DecompileError> {
-        let mut var_cnt = 0;
+    fn make_variables(&mut self, vc: &mut VariableContext) -> Result<(), DecompileError> {
         // Add static variables to root node
         {
+            /*
             let mut root_node = self.nodes[0].borrow_mut();
             // Add function parameters to stack
             root_node.ir.variables.extend(self.params.iter().map(|p| {
-                var_cnt = var_cnt + 1;
-                (*p, VariableId(var_cnt))
+                (*m, self.make_variable(NodeId(0)))
             }));
             // Add statics to stack
             root_node
@@ -663,11 +753,12 @@ impl FunctionContext {
                     var_cnt = var_cnt + 1;
                     (*r, VariableId(var_cnt))
                 }))
+                */
         }
 
         let mut made = HashSet::new();
         for i in 0..self.nodes.len() {
-            self.propogate_variables(NodeId(i), &mut var_cnt, &mut made);
+            self.propogate_variables(NodeId(i), vc, &mut made);
         }
 
         Ok(())
@@ -973,14 +1064,52 @@ impl FunctionContext {
         self.print_node(self.nodes.first().unwrap(), &mut printed);
     }*/
 
+    fn print_node(&self, node: NodeId) {
+        let node = &self.nodes[node.0].borrow();
+
+        node.ir.print();
+
+        match &node.ir.tail {
+            Tail::None => {}
+            Tail::Return(_) => todo!(),
+            Tail::TailCall(_) => todo!(),
+            Tail::Eq(cond) => {
+                let node_1 = self.node_at(cond.target_1).unwrap();
+                let node_2 = self.node_at(cond.target_1).unwrap();
+                // print!("if {} {} {} then",
+            }
+            Tail::Le(_) => todo!(),
+            Tail::Lt(_) => todo!(),
+            Tail::TestSet(_, _) => todo!(),
+            Tail::Test(_) => todo!(),
+            Tail::TForLoop {
+                call,
+                index,
+                state,
+                inner,
+                end,
+            } => todo!(),
+            Tail::ForLoop {
+                init,
+                limit,
+                step,
+                idx,
+                inner,
+                end,
+            } => todo!(),
+        }
+    }
+
     fn print(&self) {
-        self.nodes[0].borrow().ir.print();
+        self.print_node(NodeId(0));
     }
 
     fn decompile(&mut self) -> Result<(), DecompileError> {
         self.analyze_branches()?;
         self.analyze_nodes()?;
-        self.make_variables()?;
+        let mut vc = VariableContext::new();
+        self.make_variables(&mut vc)?;
+        println!("{:#?}", vc);
 
         for closure in &mut self.closures {
             closure.decompile()?;
@@ -994,7 +1123,7 @@ pub fn decompile(root: Rc<RootContext>, func: Rc<Function>) -> Result<(), Decomp
     let mut ctx = FunctionContext::new(root, func);
     ctx.decompile()?;
 
-    println!("{:#?}", ctx);
+    //println!("{:#?}", ctx);
 
     ctx.print();
 
