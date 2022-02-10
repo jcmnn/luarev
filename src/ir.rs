@@ -7,7 +7,7 @@ use std::{
 
 use serde::de::value;
 
-use crate::function::Constant;
+use crate::function::{Constant, LvmInstruction};
 
 pub type SymbolRef = Rc<RefCell<RegConst>>;
 pub type SymbolWeakRef = Weak<RefCell<RegConst>>;
@@ -475,8 +475,8 @@ pub enum Tail {
 
 // Context of IR instructions
 #[derive(Debug)]
-pub struct IrContext {
-    // The most recent values set on the stack
+pub struct IrNode {
+    // The most recent operations that operated on the stack
     pub stack: Vec<Option<Value>>,
     // Array of all symbols generated in this context
     pub operations: Vec<Operation>,
@@ -488,9 +488,9 @@ pub struct IrContext {
     pub tail: Tail,
 }
 
-impl IrContext {
-    pub fn new() -> IrContext {
-        IrContext {
+impl IrNode {
+    pub fn new() -> IrNode {
+        IrNode {
             stack: Vec::new(),
             operations: Vec::new(),
             tables: Vec::new(),
@@ -1026,4 +1026,11 @@ impl IrContext {
             }
         }
     }
+}
+
+
+
+pub struct IrTree {
+    nodes: HashMap<usize, IrNode>,
+    closures: Vec<IrTree>,
 }

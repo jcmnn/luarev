@@ -9,6 +9,7 @@ mod reader;
 mod ir;
 mod decompile;
 mod symeval;
+mod lifter;
 
 fn main() {
     let f = function::load_file("/home/jacob/unluapp/luarev/test.luac").unwrap();
