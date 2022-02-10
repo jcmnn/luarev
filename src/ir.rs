@@ -104,6 +104,7 @@ pub struct Table(Vec<Option<RegConst>>);
 #[derive(Debug, Clone, Copy)]
 pub enum RegConst {
     Stack(StackId),
+    UpValue(UpvalueId),
     Constant(ConstantId),
     VarArgs,
     VarCall(OperationId),
@@ -984,6 +985,7 @@ impl IrNode {
             RegConst::Constant(cid) => format!("const{}", cid.0),
             RegConst::VarArgs => "...".to_string(),
             RegConst::VarCall(op) => self.call_src(*op),
+            RegConst::UpValue(_) => todo!(),
         }
     }
 
@@ -1083,9 +1085,27 @@ impl IrNode {
     }
 }
 
-
-
+#[derive(Debug)]
 pub struct IrTree {
-    nodes: HashMap<usize, IrNode>,
-    closures: Vec<IrTree>,
+    pub nodes: HashMap<usize, IrNode>,
+    pub closures: Vec<IrTree>,
+    pub statics: HashSet<StackId>,
+}
+
+impl IrTree {
+    pub fn new() -> IrTree {
+        IrTree {
+            nodes: HashMap::new(),
+            closures: Vec::new(),
+            statics: HashSet::new(),
+        }
+    }
+
+    pub fn add_node(&mut self, id: usize, node: IrNode) {
+        self.nodes.insert(id, node);
+    }
+
+    pub fn add_static(&mut self, id: StackId) {
+        self.statics.insert(id);
+    }
 }

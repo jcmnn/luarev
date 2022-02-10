@@ -1,11 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, cell::RefCell, rc::{Weak, Rc}};
 
 use crate::{function::Function, ir::StackId};
 
-#[derive(Debug)]
-pub struct Variable {
-    label: String,
-}
 
 #[derive(Debug)]
 pub struct RootContext {
@@ -91,4 +87,25 @@ impl SymbolicEvaluator {
     pub fn start_function(&mut self, param_count: usize) {}
 
     //pub fn ref_symbol(&self)
+}
+
+
+
+#[derive(Debug)]
+pub struct Variable {
+    register: StackId,
+    label: String,
+    is_static: bool,
+    references: Vec<Weak<VariableRef>>,
+}
+
+#[derive(Debug)]
+pub struct VariableRef {
+    variable: RefCell<Weak<Variable>>,
+    node: usize,
+}
+
+
+pub struct VariableSolver {
+    variables: Vec<Rc<Variable>>,
 }
