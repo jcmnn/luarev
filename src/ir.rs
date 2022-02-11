@@ -1088,6 +1088,8 @@ impl IrNode {
 #[derive(Debug)]
 pub struct IrTree {
     pub nodes: HashMap<usize, IrNode>,
+    pub next: HashMap<usize, Vec<usize>>,
+    pub prev: HashMap<usize, Vec<usize>>,
     pub closures: Vec<IrTree>,
     pub statics: HashSet<StackId>,
 }
@@ -1096,9 +1098,16 @@ impl IrTree {
     pub fn new() -> IrTree {
         IrTree {
             nodes: HashMap::new(),
+            next: HashMap::new(),
+            prev: HashMap::new(),
             closures: Vec::new(),
             statics: HashSet::new(),
         }
+    }
+
+    pub fn connect_node(&mut self, prev: usize, next: usize) {
+        self.next.entry(prev).or_default().push(next);
+        self.prev.entry(next).or_default().push(prev);
     }
 
     pub fn add_node(&mut self, id: usize, node: IrNode) {

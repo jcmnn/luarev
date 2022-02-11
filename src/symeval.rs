@@ -1,6 +1,6 @@
 use std::{collections::HashMap, cell::RefCell, rc::{Weak, Rc}};
 
-use crate::{function::Function, ir::StackId};
+use crate::{function::Function, ir::{StackId, IrTree}};
 
 
 #[derive(Debug)]
@@ -88,6 +88,30 @@ impl SymbolicEvaluator {
 
     //pub fn ref_symbol(&self)
 }
+
+fn generate_scope(tree: &IrTree) {
+    
+}
+
+/*
+struct Scope<'a> {
+    // All nodes *directly* in this scope
+    nodes: Vec<usize>,
+    subscopes: Vec<Box<Scope<'a>>>,
+    parent: &'a Scope<'a>,
+}
+
+impl<'a> Scope<'a> {
+    pub fn subscope(&'a mut self) -> &Box<Scope<'a>> {
+        let scope: Box<Scope<'a>> = Box::new(Scope {
+            nodes: Vec::new(),
+            subscopes: Vec::new(),
+            parent: self
+        });
+        self.subscopes.push(scope);
+        self.subscopes.last().unwrap()
+    }
+}*/
 
 
 

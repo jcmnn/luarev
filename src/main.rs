@@ -12,12 +12,12 @@ mod symeval;
 mod lifter;
 
 fn main() {
-    let f = function::load_file("/home/jacob/luarev/test.luac").unwrap();
+    let f = function::load_file("/home/jacob/unluapp/luarev/test.luac").unwrap();
 
     let root = Rc::new(RootContext::new());
 
     {
-        let mut file = File::create("/home/jacob/luarev/test.luad").unwrap();
+        let mut file = File::create("/home/jacob/unluapp/luarev/test.luad").unwrap();
         write!(file, "{}", &f).unwrap();
     }
 

@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     function::{Function, LvmInstruction, OpCode},
-    ir::{ConstantId, IrTree, RegConst, StackId, IrNode, UpvalueId, Value, Tail},
+    ir::{ConditionalB, ConstantId, IrNode, IrTree, RegConst, StackId, Tail, UpvalueId, Value},
 };
 
 #[derive(Debug, Error)]
@@ -41,9 +41,12 @@ fn stack_or_const(r: u32) -> RegConst {
     RegConst::Stack(StackId::from(r))
 }
 
-
-
-fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -> Result<(), LifterError> {
+fn lift_node(
+    func: &Function,
+    head: usize,
+    flow: &CodeFlow,
+    tree: &mut IrTree,
+) -> Result<(), LifterError> {
     let mut node = IrNode::new();
     let mut offset = head;
 
@@ -66,7 +69,9 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                             .get(offset + 1 + idx as usize)
                             .ok_or(LifterError::UnexpectedEnd)?;
                         match upi.opcode()? {
-                            OpCode::GetUpval => Ok(RegConst::UpValue(UpvalueId::from(upi.argb() as usize))),
+                            OpCode::GetUpval => {
+                                Ok(RegConst::UpValue(UpvalueId::from(upi.argb() as usize)))
+                            }
                             OpCode::Move => {
                                 let reg = StackId::from(upi.argb());
                                 // Set register as static
@@ -163,13 +168,11 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
             }
             OpCode::SetGlobal => {
                 let cval = ConstantId(i.argbx() as usize); // func.constants[i.argbx() as usize].clone();
-                node
-                    .set_global(cval, RegConst::Stack(StackId::from(i.arga())));
+                node.set_global(cval, RegConst::Stack(StackId::from(i.arga())));
             }
             OpCode::SetCGlobal => {
                 let key = ConstantId(i.argbx() as usize); // func.constants[i.argbx() as usize].clone();
-                node
-                    .set_cglobal(key, RegConst::Stack(StackId::from(i.arga())));
+                node.set_cglobal(key, RegConst::Stack(StackId::from(i.arga())));
             }
             OpCode::Jmp => {}
             OpCode::TForLoop => {
@@ -212,8 +215,7 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                 )
             }
             OpCode::GetUpval => {
-                node
-                    .get_upvalue(StackId::from(i.arga()), UpvalueId::from(i.argb() as usize));
+                node.get_upvalue(StackId::from(i.arga()), UpvalueId::from(i.argb() as usize));
             }
             OpCode::Add => {
                 let left = stack_or_const(i.argb());
@@ -274,8 +276,7 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                 let init = RegConst::Stack(ra);
 
                 let target = (offset as i32 + 1 + i.argsbx()) as usize;
-                node
-                    .tail_forloop(step, limit, init, ra + 3_usize, target, offset + 1)
+                node.tail_forloop(step, limit, init, ra + 3_usize, target, offset + 1)
             }
             OpCode::Call => {
                 let ra = i.arga() as usize;
@@ -334,8 +335,7 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                 // TODO: Dedicated self operation
                 let table = RegConst::Stack(StackId::from(i.argb()));
                 let key = stack_or_const(i.argc());
-                node
-                    .set_stack(StackId::from(i.arga() + 1), Value::Symbol(table));
+                node.set_stack(StackId::from(i.arga() + 1), Value::Symbol(table));
                 node.get_table(StackId::from(i.arga()), table, key);
             }
             OpCode::Sub => {
@@ -344,8 +344,7 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                 node.sub(StackId::from(i.arga()), left, right);
             }
             OpCode::Move => {
-                node
-                    .mov(StackId::from(i.arga()), StackId::from(i.argb()));
+                node.mov(StackId::from(i.arga()), StackId::from(i.argb()));
             }
             OpCode::Close => {}
             OpCode::LoadNil => {
@@ -370,8 +369,7 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                 }
 
                 let target = offset as i32 + ijmp.argsbx() + 2;
-                node
-                    .tail_eq(left, right, i.arga() == 0, offset + 2, target as usize);
+                node.tail_eq(left, right, i.arga() == 0, offset + 2, target as usize);
             }
             OpCode::Lt => {
                 let left = stack_or_const(i.argb());
@@ -387,8 +385,7 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                 }
 
                 let target = offset as i32 + ijmp.argsbx() + 2;
-                node
-                    .tail_lt(left, right, i.arga() == 0, offset + 2, target as usize);
+                node.tail_lt(left, right, i.arga() == 0, offset + 2, target as usize);
             }
             OpCode::Le => {
                 let left = stack_or_const(i.argb());
@@ -404,8 +401,7 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
                 }
 
                 let target = offset as i32 + ijmp.argsbx() + 2;
-                node
-                    .tail_le(left, right, i.arga() == 0, offset + 2, target as usize);
+                node.tail_le(left, right, i.arga() == 0, offset + 2, target as usize);
             }
             OpCode::TestSet => {
                 let test = RegConst::Stack(StackId::from(i.argb()));
@@ -477,10 +473,42 @@ fn lift_node(func: &Function, head: usize, flow: &CodeFlow, tree: &mut IrTree) -
             break;
         }
     }
+
+    match &node.tail {
+        Tail::None => tree.connect_node(head, offset + 1),
+        Tail::Return(_) => {}
+        Tail::TailCall(_) => {}
+        Tail::Eq(cond) | Tail::Le(cond) | Tail::Lt(cond) => {
+            tree.connect_node(head, cond.target_1);
+            tree.connect_node(head, cond.target_2);
+        }
+        Tail::TestSet(cond, _) | Tail::Test(cond) => {
+            tree.connect_node(head, cond.target_1);
+            tree.connect_node(head, cond.target_2);
+        }
+        Tail::TForLoop {
+            call: _,
+            index: _,
+            state: _,
+            inner,
+            end,
+        }
+        | Tail::ForLoop {
+            init: _,
+            limit: _,
+            step: _,
+            idx: _,
+            inner,
+            end,
+        } => {
+            tree.connect_node(head, *inner);
+            tree.connect_node(head, *end);
+        }
+    }
+
     tree.add_node(head, node);
     Ok(())
 }
-
 
 pub fn lift(func: &Function) -> Result<IrTree, LifterError> {
     let code_flow = CodeFlow::generate(func)?;
