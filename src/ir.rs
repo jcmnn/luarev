@@ -1118,3 +1118,27 @@ impl IrTree {
         self.statics.insert(id);
     }
 }
+
+enum Flow {
+    While { inner: usize, end: usize },
+    Repeat { inner: usize, end: usize },
+    If { a: usize, end: usize },
+    IfElse { a: usize, b: usize, end: usize },
+    For { inner: usize, end: usize },
+}
+
+struct NodeFlow<'a> {
+    current: usize,
+    tree: &'a IrTree,
+    flow: Vec<Flow>,
+}
+
+impl NodeFlow<'_> {
+    pub fn new(tree: &IrTree) -> NodeFlow {
+        NodeFlow {
+            current: 0,
+            tree,
+            flow: Vec::new(),
+        }
+    }
+}
