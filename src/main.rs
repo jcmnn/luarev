@@ -4,8 +4,6 @@ use std::rc::Rc;
 
 use decompile::RootContext;
 
-use crate::ir::{NodeFlow, ControlCode};
-
 mod function;
 mod reader;
 mod ir;
@@ -25,9 +23,8 @@ fn main() {
 
     // decompile::decompile(root, f.clone()).unwrap();
     let tree = lifter::lift(&f).unwrap();
+    symeval::generate_scope(&tree);
     //println!("{:#?}", tree);
-    println!("Forward: {:?}", tree.next);
-
     
     //println!("{:#?}", flow);
 }
