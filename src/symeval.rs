@@ -1,6 +1,6 @@
 use std::{collections::HashMap, cell::RefCell, rc::{Weak, Rc}};
 
-use crate::{function::Function, ir::{StackId, IrTree}};
+use crate::{function::Function, ir::{StackId, IrTree, NodeFlow, ControlCode}};
 
 
 #[derive(Debug)]
@@ -90,29 +90,45 @@ impl SymbolicEvaluator {
 }
 
 fn generate_scope(tree: &IrTree) {
-    
-}
-
-/*
-struct Scope<'a> {
-    // All nodes *directly* in this scope
-    nodes: Vec<usize>,
-    subscopes: Vec<Box<Scope<'a>>>,
-    parent: &'a Scope<'a>,
-}
-
-impl<'a> Scope<'a> {
-    pub fn subscope(&'a mut self) -> &Box<Scope<'a>> {
-        let scope: Box<Scope<'a>> = Box::new(Scope {
-            nodes: Vec::new(),
-            subscopes: Vec::new(),
-            parent: self
-        });
-        self.subscopes.push(scope);
-        self.subscopes.last().unwrap()
+    let mut flow = NodeFlow::new(&tree);
+    loop {
+        let code = flow.next();
+        println!("{:?}, {}", code, flow.current);
+        if matches!(code.last().unwrap(), ControlCode::EndFunction) {
+            break;
+        }
     }
-}*/
+}
 
+#[derive(Debug, Clone, Copy)]
+struct ScopeId(usize);
+
+struct Scope {
+    id: ScopeId,
+    // All nodes *directly* in this scope
+    nodes: Vec<ScopeId>,
+    children: Vec<ScopeId>,
+    parent: ScopeId,
+}
+
+struct ScopeTree {
+    scopes: Vec<Scope>,
+}
+
+impl ScopeTree {
+    pub fn subscope(&mut self, root: ScopeId) -> ScopeId {
+        let id = ScopeId(self.scopes.len());
+        let scope = Scope {
+            id,
+            nodes: Vec::new(),
+            children: Vec::new(),
+            parent: root,
+        };
+        self.scopes[root.0].children.push(id);
+        self.scopes.push(scope);
+        id
+    }
+}
 
 
 #[derive(Debug)]

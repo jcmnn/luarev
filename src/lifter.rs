@@ -475,7 +475,7 @@ fn lift_node(
     }
 
     match &node.tail {
-        Tail::None => tree.connect_node(head, offset + 1),
+        Tail::None => tree.connect_node(head, *flow.forward[offset].first().unwrap()),
         Tail::Return(_) => {}
         Tail::TailCall(_) => {}
         Tail::Eq(cond) | Tail::Le(cond) | Tail::Lt(cond) => {
@@ -538,6 +538,8 @@ impl CodeFlow {
             forward,
         };
 
+        flow.add_branch(usize::MAX, 0)?;
+
         let mut iter = code.iter().enumerate();
         while let Some((offset, i)) = iter.next() {
             match i.opcode()? {
@@ -598,10 +600,12 @@ impl CodeFlow {
     }
 
     fn add_branch(&mut self, src: usize, dst: usize) -> Result<(), LifterError> {
-        if src >= self.forward.len() || dst >= self.reverse.len() {
+        if (src != usize::MAX && src >= self.forward.len()) || dst >= self.reverse.len() {
             Err(LifterError::UnexpectedEnd)
         } else {
-            self.forward[src].push(dst);
+            if src != usize::MAX {
+                self.forward[src].push(dst);
+            }
             self.reverse[dst].push(src);
             Ok(())
         }

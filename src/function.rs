@@ -483,8 +483,8 @@ impl Display for Function {
         }
 
         writeln!(f, "\n.start")?;
-        for i in &self.code {
-            writeln!(f, "{}", i)?;
+        for (index, i) in self.code.iter().enumerate() {
+            writeln!(f, "{:>3} {}", index, i)?;
         }
 
         writeln!(f, "\n-- Closures:")?;

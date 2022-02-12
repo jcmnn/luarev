@@ -1112,6 +1112,9 @@ impl IrTree {
 
     pub fn add_node(&mut self, id: usize, node: IrNode) {
         self.nodes.insert(id, node);
+        // Ensure next/prev entries exist
+        self.next.entry(id).or_default();
+        self.prev.entry(id).or_default();
     }
 
     pub fn add_static(&mut self, id: StackId) {
@@ -1119,26 +1122,321 @@ impl IrTree {
     }
 }
 
+#[derive(Debug)]
 enum Flow {
-    While { inner: usize, end: usize },
-    Repeat { inner: usize, end: usize },
+    While { cond: usize, end: usize },
+    Repeat { cond: usize, end: usize },
     If { a: usize, end: usize },
     IfElse { a: usize, b: usize, end: usize },
-    For { inner: usize, end: usize },
+    Else { a: usize, end: usize },
+    For { cond: usize, end: usize },
 }
 
-struct NodeFlow<'a> {
-    current: usize,
+#[derive(Debug)]
+pub enum ControlCode {
+    None,
+    EndFunction,
+    End,
+    Else,
+    Break,
+    Continue,
+    EndsPastLoop,
+    Repeat,
+    For,
+    While(bool), // True if direction is reversed
+    If(bool),
+    Until(bool),
+}
+
+#[derive(Debug)]
+pub struct NodeFlow<'a> {
+    flowed: HashSet<usize>,
+    pub current: usize,
     tree: &'a IrTree,
+    end_next: bool,
     flow: Vec<Flow>,
 }
 
 impl NodeFlow<'_> {
     pub fn new(tree: &IrTree) -> NodeFlow {
         NodeFlow {
+            flowed: HashSet::new(),
             current: 0,
             tree,
+            end_next: false,
             flow: Vec::new(),
         }
+    }
+
+    fn node_ends_at_impl(
+        &self,
+        start: usize,
+        end: usize,
+        ignore: &HashSet<usize>,
+        cache: &mut HashSet<usize>,
+        ignore_flowed: bool,
+    ) -> bool {
+        if start == end {
+            return true;
+        }
+        if (ignore.contains(&start)) || !cache.insert(start) {
+            return false;
+        }
+
+        self.tree.next[&start]
+            .iter()
+            .any(|i| self.node_ends_at_impl(*i, end, ignore, cache, ignore_flowed))
+    }
+
+    fn node_ends_at(&self, start: usize, end: usize) -> bool {
+        self.node_ends_at_impl(start, end, &self.flowed, &mut HashSet::new(), true)
+    }
+
+    fn common_ends_impl(
+        &self,
+        first: usize,
+        second: usize,
+        cache: &mut HashSet<usize>,
+        common: &mut HashSet<usize>,
+    ) {
+        if !cache.insert(second) {
+            return;
+        }
+
+        if self.node_ends_at_impl(first, second, common, &mut HashSet::new(), false) {
+            common.insert(second);
+        }
+
+        for i in &self.tree.next[&second] {
+            if common.contains(i) {
+                continue;
+            }
+            self.common_ends_impl(first, *i, cache, common);
+        }
+    }
+
+    fn common_ends(&self, first: usize, second: usize) -> Vec<usize> {
+        let mut common = HashSet::new();
+        let mut cache = HashSet::new();
+        cache.insert(first);
+        self.common_ends_impl(first, second, &mut cache, &mut common);
+        common.remove(&second);
+        Vec::from_iter(common)
+    }
+
+    fn check_last_flows(&mut self) -> Option<ControlCode> {
+        if self.end_next {
+            self.end_next = false;
+            return Some(self.end_last_flow());
+        }
+        let mut passed_loop = false;
+        for (i, flow) in self.flow.iter().rev().enumerate() {
+            match flow {
+                Flow::While { cond, end }
+                | Flow::Repeat { cond, end }
+                | Flow::For { cond, end } => {
+                    if *end == self.current {
+                        if i != 0 {
+                            self.end_next = true;
+                            return Some(ControlCode::Break);
+                            // Break
+                        } else {
+                            return Some(self.end_last_flow());
+                            // End
+                        }
+                    } else if *cond == self.current {
+                        if i != 0 {
+                            self.end_next = true;
+                            if passed_loop {
+                                // TODO: Check if we actually break to the upper loop
+                                return Some(ControlCode::Break);
+                            } else {
+                                return Some(ControlCode::Continue);
+                            }
+                        } else {
+                            return Some(self.end_last_flow());
+                        }
+                    } else {
+                        passed_loop = true;
+                        // This is an error
+                        // panic!("Flow goes outside loop");
+                        // Some((i, ControlCode::EndsPastLoop))
+                    }
+                }
+                Flow::If { a, end } | Flow::Else { a, end } if *end == self.current => {
+                    if i != 0 {
+                        panic!("Code breaks from non-immediate if");
+                    }
+                    self.current = *end;
+                    return Some(self.end_last_flow());
+                    // End
+                }
+                Flow::IfElse { a, b, end } if *end == self.current => {
+                    if i != 0 {
+                        panic!("Code breaks from non-immediate if");
+                    }
+                    self.current = *b;
+                    return Some(self.end_last_flow());
+                    // Else
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn end_last_flow(&mut self) -> ControlCode {
+        if let Some(last) = self.flow.pop() {
+            match last {
+                Flow::While { cond, end }
+                | Flow::Repeat { cond, end }
+                | Flow::For { cond, end } => {
+                    self.current = end;
+                    ControlCode::End
+                }
+                Flow::If { a, end } => {
+                    self.current = end;
+                    ControlCode::End
+                }
+                Flow::IfElse { a, b, end } => {
+                    self.flow.push(Flow::Else { a: b, end });
+                    self.current = b;
+                    ControlCode::Else
+                }
+                Flow::Else { a, end } => {
+                    self.current = end;
+                    ControlCode::End
+                }
+            }
+        } else {
+            ControlCode::EndFunction
+        }
+    }
+
+    pub fn next(&mut self) -> Vec<ControlCode> {
+        let node = &self.tree.nodes[&self.current];
+        assert!(self.flowed.insert(self.current));
+
+        let mut res = Vec::new();
+        res.push(match node.tail {
+            Tail::None => {
+                // TODO: Check if this is a repeat-until loop or a break
+                // fall through
+                let next_node = self.tree.next[&self.current].first().unwrap();
+                self.current = *next_node;
+                self.check_last_flows().unwrap_or(ControlCode::None)
+            }
+            Tail::Return(_) | Tail::TailCall(_) => self.end_last_flow(),
+            Tail::Eq(ConditionalB {
+                left: _,
+                right: _,
+                direction,
+                target_1,
+                target_2,
+            })
+            | Tail::Le(ConditionalB {
+                left: _,
+                right: _,
+                direction,
+                target_1,
+                target_2,
+            })
+            | Tail::Lt(ConditionalB {
+                left: _,
+                right: _,
+                direction,
+                target_1,
+                target_2,
+            })
+            | Tail::TestSet(
+                ConditionalA {
+                    value: _,
+                    direction,
+                    target_1,
+                    target_2,
+                },
+                _,
+            )
+            | Tail::Test(ConditionalA {
+                value: _,
+                direction,
+                target_1,
+                target_2,
+            }) => {
+                if self.node_ends_at(target_1, self.current) {
+                    // Loop
+                    self.flow.push(Flow::While {
+                        cond: self.current,
+                        end: target_2,
+                    });
+                    self.current = target_1;
+                    ControlCode::While(false)
+                } else if self.node_ends_at(target_2, self.current) {
+                    // Loop (reverse)
+                    self.flow.push(Flow::While {
+                        cond: self.current,
+                        end: target_1,
+                    });
+                    self.current = target_2;
+                    ControlCode::While(true)
+                } else if self.node_ends_at(target_1, target_2) {
+                    // If
+                    self.flow.push(Flow::If {
+                        a: target_1,
+                        end: target_2,
+                    });
+                    self.current = target_1;
+                    ControlCode::If(false)
+                } else if self.node_ends_at(target_2, target_1) {
+                    // If (reverse)
+                    self.flow.push(Flow::If {
+                        a: target_2,
+                        end: target_1,
+                    });
+                    self.current = target_2;
+                    ControlCode::If(true)
+                } else {
+                    // If-else ?
+                    let common = self.common_ends(target_1, target_2);
+                    println!("Common nodes: {:?}", common);
+                    if common.len() != 1 {
+                        todo!();
+                    }
+                    self.flow.push(Flow::IfElse {
+                        a: target_1,
+                        b: target_2,
+                        end: *common.first().unwrap(),
+                    });
+                    self.current = target_1;
+                    ControlCode::If(false)
+                }
+            }
+            Tail::TForLoop {
+                call: _,
+                index: _,
+                state: _,
+                inner,
+                end,
+            }
+            | Tail::ForLoop {
+                init: _,
+                limit: _,
+                step: _,
+                idx: _,
+                inner,
+                end,
+            } => {
+                self.flow.push(Flow::For {
+                    cond: self.current,
+                    end,
+                });
+                self.current = inner;
+                ControlCode::For
+            }
+        });
+        while let Some(code) = self.check_last_flows() {
+            res.push(code);
+        }
+        res
     }
 }
