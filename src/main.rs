@@ -28,13 +28,6 @@ fn main() {
     //println!("{:#?}", tree);
     println!("Forward: {:?}", tree.next);
 
-    let mut flow = NodeFlow::new(&tree);
-    loop {
-        let code = flow.next();
-        println!("{:?}, {}", code, flow.current);
-        if matches!(code.last().unwrap(), ControlCode::EndFunction) {
-            break;
-        }
-    }
+    
     //println!("{:#?}", flow);
 }
