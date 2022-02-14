@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::{
     function::{Constant, Function, LvmInstruction, Name, OpCode},
     ir::{
-        ConstantId, IrNode, OperationId, RegConst, StackId, Tail, UpvalueId, Value, VariableId,
+        ConstantId, IrNodeBuilder, OperationId, RegConst, StackId, Tail, UpvalueId, Value, VariableId,
     },
 };
 
@@ -40,7 +40,7 @@ pub struct Node {
     id: NodeId,
     offset: usize,
     last_offset: usize,
-    ir: IrNode,
+    ir: IrNodeBuilder,
     next: Vec<NodeId>,
     prev: Vec<NodeId>,
 }
@@ -69,7 +69,7 @@ impl Node {
             id,
             offset,
             last_offset: offset,
-            ir: IrNode::new(),
+            ir: IrNodeBuilder::new(),
             next: Vec::new(),
             prev: Vec::new(),
         }

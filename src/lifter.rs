@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     function::{Function, LvmInstruction, OpCode},
-    ir::{ConditionalB, ConstantId, IrNode, IrTree, RegConst, StackId, Tail, UpvalueId, Value},
+    ir::{ConditionalB, ConstantId, IrNodeBuilder, IrTree, RegConst, StackId, Tail, UpvalueId, Value, VariableSolver},
 };
 
 #[derive(Debug, Error)]
@@ -45,9 +45,10 @@ fn lift_node(
     func: &Function,
     head: usize,
     flow: &CodeFlow,
+    solver: &mut VariableSolver,
     tree: &mut IrTree,
 ) -> Result<(), LifterError> {
-    let mut node = IrNode::new();
+    let mut node = IrNodeBuilder::new(solver);
     let mut offset = head;
 
     loop {
@@ -335,7 +336,8 @@ fn lift_node(
                 // TODO: Dedicated self operation
                 let table = RegConst::Stack(StackId::from(i.argb()));
                 let key = stack_or_const(i.argc());
-                node.set_stack(StackId::from(i.arga() + 1), Value::Symbol(table));
+                let symbol = Value::Symbol(node.reference_regconst(table));
+                node.set_stack(StackId::from(i.arga() + 1), symbol);
                 node.get_table(StackId::from(i.arga()), table, key);
             }
             OpCode::Sub => {
@@ -358,7 +360,6 @@ fn lift_node(
             OpCode::Eq => {
                 let left = stack_or_const(i.argb());
                 let right = stack_or_const(i.argc());
-                node.add_referenced(&[left, right]);
 
                 let ijmp = func
                     .code
@@ -374,7 +375,6 @@ fn lift_node(
             OpCode::Lt => {
                 let left = stack_or_const(i.argb());
                 let right = stack_or_const(i.argc());
-                node.add_referenced(&[left, right]);
 
                 let ijmp = func
                     .code
@@ -390,7 +390,6 @@ fn lift_node(
             OpCode::Le => {
                 let left = stack_or_const(i.argb());
                 let right = stack_or_const(i.argc());
-                node.add_referenced(&[left, right]);
 
                 let ijmp = func
                     .code
@@ -425,7 +424,6 @@ fn lift_node(
             }
             OpCode::Test => {
                 let test = RegConst::Stack(StackId::from(i.arga()));
-                node.add_referenced(&[test]);
 
                 let ijmp = func
                     .code
@@ -506,18 +504,19 @@ fn lift_node(
         }
     }
 
-    tree.add_node(head, node);
+    tree.add_node(head, node.build());
     Ok(())
 }
 
 pub fn lift(func: &Function) -> Result<IrTree, LifterError> {
+    let mut solver = VariableSolver::new();
     let code_flow = CodeFlow::generate(func)?;
     let node_heads = code_flow.nodes();
 
     let mut tree = IrTree::new();
 
     for head in node_heads {
-        lift_node(func, head, &code_flow, &mut tree)?;
+        lift_node(func, head, &code_flow, &mut solver, &mut tree)?;
     }
 
     Ok(tree)

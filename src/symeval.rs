@@ -6,21 +6,8 @@ use std::{
 
 use crate::{
     function::Function,
-    ir::{ConditionalA, ConditionalB, IrTree, RegConst, StackId, Tail, IrNode},
+    ir::{ConditionalA, ConditionalB, IrNode, IrTree, RegConst, StackId, Tail, VarConst, VariableRef},
 };
-
-#[derive(Debug)]
-pub struct RootContext {
-    variables: Vec<Variable>,
-}
-
-impl RootContext {
-    pub fn new() -> RootContext {
-        RootContext {
-            variables: Vec::new(),
-        }
-    }
-}
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 // Id of a symbol
@@ -34,10 +21,6 @@ pub struct Symbol {
     references: usize,
     // Nodes this symbol was defined in
     nodes: Vec<NodeId>,
-}
-
-pub struct NodeDecompiler<'a> {
-    node: &'a IrNode,
 }
 
 #[derive(Debug)]
@@ -97,17 +80,11 @@ impl SourceBuilder<'_> {
         self.source.push(SourceControl::Node(node));
     }
 
-
-
     fn finish(&mut self) {
         for control in &self.source {
             match control {
-                SourceControl::Control(code) => {
-
-                },
-                SourceControl::Node(node) => {
-
-                },
+                SourceControl::Control(code) => {}
+                SourceControl::Node(node) => {}
             }
         }
     }
@@ -126,34 +103,34 @@ enum Flow {
 #[derive(Debug)]
 pub enum Conditional {
     Eq {
-        left: RegConst,
-        right: RegConst,
+        left: VarConst,
+        right: VarConst,
         direction: bool,
     },
     Le {
-        left: RegConst,
-        right: RegConst,
+        left: VarConst,
+        right: VarConst,
         direction: bool,
     },
     Lt {
-        left: RegConst,
-        right: RegConst,
+        left: VarConst,
+        right: VarConst,
         direction: bool,
     },
     TestSet {
-        value: RegConst,
-        target: StackId,
+        value: VarConst,
+        target: VariableRef,
         direction: bool,
     },
     Test {
-        value: RegConst,
+        value: VarConst,
         direction: bool,
     },
 }
 
 impl Conditional {
     pub fn from_tail(tail: &Tail, reverse_direction: bool) -> Conditional {
-        match *tail {
+        match tail {
             Tail::Eq(ConditionalB {
                 left,
                 right,
@@ -161,8 +138,8 @@ impl Conditional {
                 target_1: _,
                 target_2: _,
             }) => Self::Eq {
-                left,
-                right,
+                left: left.clone(),
+                right: right.clone(),
                 direction: direction ^ reverse_direction,
             },
             Tail::Le(ConditionalB {
@@ -172,8 +149,8 @@ impl Conditional {
                 target_1: _,
                 target_2: _,
             }) => Self::Le {
-                left,
-                right,
+                left: left.clone(),
+                right: right.clone(),
                 direction: direction ^ reverse_direction,
             },
             Tail::Lt(ConditionalB {
@@ -183,8 +160,8 @@ impl Conditional {
                 target_1: _,
                 target_2: _,
             }) => Self::Lt {
-                left,
-                right,
+                left: left.clone(),
+                right: right.clone(),
                 direction: direction ^ reverse_direction,
             },
             Tail::TestSet(
@@ -196,9 +173,9 @@ impl Conditional {
                 },
                 target,
             ) => Self::TestSet {
-                value,
+                value: value.clone(),
                 direction: direction ^ reverse_direction,
-                target,
+                target: target.clone(),
             },
             Tail::Test(ConditionalA {
                 value,
@@ -206,7 +183,7 @@ impl Conditional {
                 target_1: _,
                 target_2: _,
             }) => Self::Test {
-                value,
+                value: value.clone(),
                 direction: direction ^ reverse_direction,
             },
             _ => panic!("Tail is not a conditional"),
@@ -625,24 +602,6 @@ impl ScopeTree {
     }
 }
 
-#[derive(Debug)]
-pub struct Variable {
-    register: StackId,
-    label: String,
-    is_static: bool,
-    references: Vec<Weak<VariableRef>>,
-}
-
-#[derive(Debug)]
-pub struct VariableRef {
-    variable: RefCell<Weak<Variable>>,
-    node: usize,
-}
-
-pub struct VariableSolver {
-    variables: Vec<Rc<Variable>>,
-}
-
 pub struct NodeBuilder<'a> {
     id: NodeId,
     function: &'a FunctionBuilder<'a>,
@@ -662,7 +621,6 @@ pub struct FunctionBuilder<'a> {
 }
 
 pub struct SymbolicEvaluator {
-    context: RootContext,
     symbols: Vec<Symbol>,
     buffer: Vec<u8>,
 }
@@ -691,7 +649,6 @@ impl FunctionBuilder<'_> {
 impl SymbolicEvaluator {
     pub fn new() -> SymbolicEvaluator {
         SymbolicEvaluator {
-            context: RootContext::new(),
             symbols: Vec::new(),
             buffer: Vec::new(),
         }
