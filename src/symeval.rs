@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     function::Function,
-    ir::{ConditionalA, ConditionalB, IrTree, RegConst, StackId, Tail},
+    ir::{ConditionalA, ConditionalB, IrTree, RegConst, StackId, Tail, IrNode},
 };
 
 #[derive(Debug)]
@@ -36,6 +36,10 @@ pub struct Symbol {
     nodes: Vec<NodeId>,
 }
 
+pub struct NodeDecompiler<'a> {
+    node: &'a IrNode,
+}
+
 #[derive(Debug)]
 pub enum SourceControl {
     Control(ControlCode),
@@ -43,25 +47,69 @@ pub enum SourceControl {
 }
 
 #[derive(Debug)]
-pub struct SourceBuilder<'a> {
+struct SourceBuilder<'a> {
     tree: &'a IrTree,
     source: Vec<SourceControl>,
+    scopes: ScopeTree,
+    current_scope: ScopeId,
+    node_scope: HashMap<usize, ScopeId>,
 }
 
 impl SourceBuilder<'_> {
     pub fn new(tree: &IrTree) -> SourceBuilder {
+        let mut scopes = ScopeTree::new();
         SourceBuilder {
             tree,
             source: Vec::new(),
+            current_scope: scopes.root(),
+            scopes,
+            node_scope: HashMap::new(),
         }
     }
 
-    pub fn add_control(&mut self, control: ControlCode) {
+    fn add_control(&mut self, control: ControlCode) {
+        match control {
+            ControlCode::EndFunction => {
+                assert!(self.current_scope.is_root());
+            }
+            ControlCode::End | ControlCode::Until(_) => {
+                // Go up a scope
+                self.current_scope = self.scopes.parent(self.current_scope);
+            }
+            ControlCode::Else => {
+                // Make a new subscope of the parent
+                self.current_scope = self.scopes.subscope(self.scopes.parent(self.current_scope));
+            }
+            ControlCode::EndsPastLoop => todo!(),
+            ControlCode::If(_) | ControlCode::While(_) | ControlCode::For | ControlCode::Repeat => {
+                // Make a new subscope
+                self.current_scope = self.scopes.subscope(self.current_scope);
+            }
+            _ => {}
+        };
         self.source.push(SourceControl::Control(control));
     }
 
-    pub fn add_node(&mut self, node: usize) {
+    fn add_node(&mut self, node: usize) {
+        // Add node to current scope
+        self.scopes.add_node(self.current_scope, node);
+        self.node_scope.insert(node, self.current_scope);
         self.source.push(SourceControl::Node(node));
+    }
+
+
+
+    fn finish(&mut self) {
+        for control in &self.source {
+            match control {
+                SourceControl::Control(code) => {
+
+                },
+                SourceControl::Node(node) => {
+
+                },
+            }
+        }
     }
 }
 
@@ -515,28 +563,63 @@ pub fn generate_scope(tree: &IrTree) {
 #[derive(Debug, Clone, Copy)]
 struct ScopeId(usize);
 
+impl ScopeId {
+    pub fn is_root(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+#[derive(Debug)]
 struct Scope {
     id: ScopeId,
     // All nodes *directly* in this scope
-    nodes: Vec<ScopeId>,
+    nodes: Vec<usize>,
     children: Vec<ScopeId>,
     parent: ScopeId,
 }
 
+#[derive(Debug)]
 struct ScopeTree {
     scopes: Vec<Scope>,
 }
 
 impl ScopeTree {
-    pub fn subscope(&mut self, root: ScopeId) -> ScopeId {
+    pub fn new() -> ScopeTree {
+        ScopeTree {
+            scopes: Vec::from_iter([Scope {
+                id: ScopeId(0),
+                nodes: Vec::new(),
+                children: Vec::new(),
+                parent: ScopeId(0),
+            }]),
+        }
+    }
+
+    // Returns the parent scope
+    pub fn parent(&self, scope: ScopeId) -> ScopeId {
+        self.scopes[scope.0].parent
+    }
+
+    // Returns the root scope
+    pub fn root(&mut self) -> ScopeId {
+        ScopeId(0)
+    }
+
+    // Add a node to a scope
+    pub fn add_node(&mut self, scope: ScopeId, node: usize) {
+        self.scopes[scope.0].nodes.push(node);
+    }
+
+    // Creates a new subscope
+    pub fn subscope(&mut self, parent: ScopeId) -> ScopeId {
         let id = ScopeId(self.scopes.len());
         let scope = Scope {
             id,
             nodes: Vec::new(),
             children: Vec::new(),
-            parent: root,
+            parent,
         };
-        self.scopes[root.0].children.push(id);
+        self.scopes[parent.0].children.push(id);
         self.scopes.push(scope);
         id
     }
