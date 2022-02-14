@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io::Write;
-use std::rc::Rc;
 
 mod function;
 mod reader;

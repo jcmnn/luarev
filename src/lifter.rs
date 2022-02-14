@@ -132,33 +132,6 @@ fn lift_node(
 
                 let table = StackId::from(ra);
                 node.set_list(table, (c - 1) * 50, n);
-
-                /*
-                if n == 0 {
-                    // Search stack for vararg
-                    for j in (ra + 1)..node.stack.len() {
-                        let val = node.get_stack(StackId::from(j));
-                        if val.borrow().is_var() {
-                            n = j - ra;
-                            break;
-                        }
-                    }
-                    assert!(n != 0);
-                }
-
-                let mut last = (((c - 1) * 50) + n) as usize;
-
-                // Resize table if needed
-                if last > items.len() {
-                    items.resize(last, None);
-                }
-
-                for idx in (1..=n).rev() {
-                    let val = node.get_stack(StackId::from(ra + idx as usize));
-                    RefCell::borrow_mut(&val).add_reference(&table);
-                    items[last - 1] = Some(val);
-                    last -= 1;
-                }*/
             }
             OpCode::LoadK => {
                 node.load_constant(
@@ -299,27 +272,6 @@ fn lift_node(
                         Some(nresults as usize)
                     },
                 );
-                /*
-                let results = match nresults {
-                    -1 => {
-                        let res = self.make_value(Value::VarArg);
-                        self.stack.set(ra, res.clone());
-                        [res].to_vec()
-                    }
-                    _ => (0..nresults as usize)
-                        .map(|ri| {
-                            let val = self.make_value(Value::ReturnValue(func.clone()));
-                            self.stack.set(ra + 3 + ri, val.clone());
-                            val
-                        })
-                        .collect(),
-                };
-
-                let params = (0..nparams)
-                    .map(|pi| self.stack.get(ra + 1 + pi as usize))
-                    .collect();
-                let _call = self.make_value(Value::Call(func, params, results));
-                */
             }
             OpCode::LoadBool => {
                 node.load_boolean(StackId::from(i.arga()), i.argb() != 0);
