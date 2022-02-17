@@ -1,12 +1,16 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    fmt::Display,
     rc::{Rc, Weak},
 };
 
 use crate::{
     function::Function,
-    ir::{ConditionalA, ConditionalB, IrNode, IrTree, RegConst, StackId, Tail, VarConst, VariableRef},
+    ir::{
+        ConditionalA, ConditionalB, IrNode, IrTree, OperationId, RegConst, StackId, Tail, Value,
+        VarConst, VariableRef, VariableSolver,
+    },
 };
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -30,12 +34,18 @@ pub enum SourceControl {
 }
 
 #[derive(Debug)]
-struct SourceBuilder<'a> {
-    tree: &'a IrTree,
-    source: Vec<SourceControl>,
+pub struct SourceBuilder<'a> {
+    pub tree: &'a IrTree,
+    pub source: Vec<SourceControl>,
     scopes: ScopeTree,
     current_scope: ScopeId,
     node_scope: HashMap<usize, ScopeId>,
+}
+
+impl Display for SourceBuilder<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.print(f)
+    }
 }
 
 impl SourceBuilder<'_> {
@@ -48,6 +58,297 @@ impl SourceBuilder<'_> {
             scopes,
             node_scope: HashMap::new(),
         }
+    }
+
+    fn write_var(&self, var: &VariableRef, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "var_{}", var.0)
+    }
+
+    fn write_vc(&self, var: &VarConst, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match var {
+            VarConst::Var(vref) => self.write_var(vref, f)?,
+            VarConst::UpValue(upv) => write!(f, "upval_{}", upv.0)?,
+            VarConst::Constant(cid) => write!(f, "const_{}", cid.0)?,
+            VarConst::VarArgs => write!(f, "...")?,
+            VarConst::VarCall(_) => write!(f, "...")?,
+        };
+
+        Ok(())
+    }
+
+    fn write_conditional(
+        &self,
+        cond: &Conditional,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        match cond {
+            Conditional::Eq {
+                left,
+                right,
+                direction,
+            } => {
+                self.write_vc(left, f)?;
+                if *direction {
+                    write!(f, " == ")?;
+                } else {
+                    write!(f, " ~= ")?;
+                }
+                self.write_vc(right, f)?;
+            }
+            Conditional::Le {
+                left,
+                right,
+                direction,
+            } => {
+                self.write_vc(left, f)?;
+                if *direction {
+                    write!(f, " <= ")?;
+                } else {
+                    write!(f, " > ")?;
+                }
+                self.write_vc(right, f)?;
+            }
+            Conditional::Lt {
+                left,
+                right,
+                direction,
+            } => {
+                self.write_vc(left, f)?;
+                if *direction {
+                    write!(f, " < ")?;
+                } else {
+                    write!(f, " >= ")?;
+                }
+                self.write_vc(right, f)?;
+            }
+            Conditional::TestSet {
+                value,
+                target,
+                direction,
+            } => self.write_vc(value, f)?,
+            Conditional::Test { value, direction } => {
+                self.write_vc(value, f)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_value(&self, value: &Value, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match value {
+            Value::None => todo!(),
+            Value::Symbol(vc) => self.write_vc(vc, f)?,
+            Value::Number(n) => write!(f, "{n}")?,
+            Value::Boolean(b) => write!(f, "{b}")?,
+            Value::Param => {}
+            Value::Add { left, right } => {
+                self.write_vc(left, f)?;
+                write!(f, " + ")?;
+                self.write_vc(right, f)?;
+            }
+            Value::Sub { left, right } => {
+                self.write_vc(left, f)?;
+                write!(f, " - ")?;
+                self.write_vc(right, f)?;
+            }
+            Value::Div { left, right } => {
+                self.write_vc(left, f)?;
+                write!(f, " / ")?;
+                self.write_vc(right, f)?;
+            }
+            Value::Mul { left, right } => {
+                self.write_vc(left, f)?;
+                write!(f, " * ")?;
+                self.write_vc(right, f)?;
+            }
+            Value::Mod { left, right } => {
+                self.write_vc(left, f)?;
+                write!(f, " % ")?;
+                self.write_vc(right, f)?;
+            }
+            Value::Pow { left, right } => {
+                self.write_vc(left, f)?;
+                write!(f, "^")?;
+                self.write_vc(right, f)?;
+            }
+            Value::Nil => write!(f, "nil")?,
+            Value::Not(value) => {
+                write!(f, "not ")?;
+                self.write_vc(value, f)?;
+            }
+            Value::Unm(value) => {
+                write!(f, "-")?;
+                self.write_vc(value, f)?;
+            }
+            Value::Len(value) => {
+                write!(f, "#")?;
+                self.write_vc(value, f)?;
+            }
+            Value::Return(_, _) => {}
+            Value::GetTable { table, key } => {
+                self.write_vc(table, f)?;
+                write!(f, "[")?;
+                self.write_vc(key, f)?;
+                write!(f, "]")?;
+            }
+            Value::Closure { index, upvalues } => todo!(),
+            Value::Table(id) => {
+                write!(f, "{{unimplemented}}")?;
+            }
+            Value::Upvalue(upvalue) => {
+                write!(f, "upvalue_{}", upvalue.0)?;
+            }
+            Value::ForIndex => {
+                write!(f, "idx")?;
+            }
+            Value::Global(cid) => {
+                write!(f, "global_cid_{}", cid.0)?;
+            }
+            Value::VarArgs => write!(f, "...")?,
+            Value::Arg(_) => {}
+            Value::Concat(vals) => {
+                for (i, v) in vals.iter().enumerate() {
+                    if i != 0 {
+                        write!(f, " .. ")?;
+                    }
+                    self.write_vc(v, f)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_call(
+        &self,
+        func: &VarConst,
+        params: &[VarConst],
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        self.write_vc(func, f)?;
+        write!(f, "(")?;
+        for (i, p) in params.iter().enumerate() {
+            if i != 0 {
+                write!(f, ",")?;
+            }
+            self.write_vc(p, f)?;
+        }
+        write!(f, ")")
+    }
+
+    fn print_node(&self, node: &IrNode, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for op in &node.operations {
+            match op {
+                crate::ir::Operation::SetStack(dst, val) => {
+                    self.write_var(dst, f)?;
+                    write!(f, " = ")?;
+                    self.write_value(val, f)?;
+                    writeln!(f)?;
+                }
+                crate::ir::Operation::Call {
+                    func,
+                    params,
+                    returns,
+                    is_multiret,
+                } => {
+                    if !returns.is_empty() {
+                        for (i, r) in returns.iter().enumerate() {
+                            if i != 0 {
+                                write!(f, ",")?;
+                            }
+                            self.write_vc(r, f)?;
+                        }
+                        write!(f, " = ")?;
+                    }
+                    self.write_call(func, &params, f)?;
+                    writeln!(f)?;
+                }
+                crate::ir::Operation::SetGlobal(cid, vc) => {
+                    write!(f, "gbl_{} = ", cid.0)?;
+                    self.write_vc(vc, f)?;
+                    writeln!(f)?;
+                }
+                crate::ir::Operation::SetCGlobal(cid, vc) => {
+                    write!(f, "cgbl_{} = ", cid.0)?;
+                    self.write_vc(vc, f)?;
+                    writeln!(f)?;
+                }
+                crate::ir::Operation::SetUpvalue(upv, vc) => {
+                    write!(f, "upv_{}", upv.0)?;
+                    self.write_vc(vc, f)?;
+                    writeln!(f)?;
+                }
+                crate::ir::Operation::SetTable { table, key, value } => {
+                    self.write_vc(table, f)?;
+                    write!(f, "[")?;
+                    self.write_vc(key, f)?;
+                    write!(f, "] = ")?;
+                    self.write_vc(value, f)?;
+                    writeln!(f)?;
+                }
+                crate::ir::Operation::GetVarArgs(args) => {
+                    for (i, r) in args.iter().enumerate() {
+                        if i != 0 {
+                            write!(f, ",")?;
+                        }
+                        self.write_vc(r, f)?;
+                    }
+                    writeln!(f, " = ...")?;
+                }
+                crate::ir::Operation::SetList(_, _, _) => todo!(),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn print(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for source in &self.source {
+            match source {
+                SourceControl::Control(code) => match code {
+                    ControlCode::None => {}
+                    ControlCode::EndFunction => {}
+                    ControlCode::End => writeln!(f, "end")?,
+                    ControlCode::Else => writeln!(f, "else")?,
+                    ControlCode::Break => writeln!(f, "break")?,
+                    ControlCode::Continue => writeln!(f, "continue")?,
+                    ControlCode::EndsPastLoop => todo!(),
+                    ControlCode::Repeat => writeln!(f, "repeat")?,
+                    ControlCode::TFor { call, index, state } => {
+                        writeln!(f, "for _ in _ d")?;
+                    }
+                    ControlCode::For {
+                        step,
+                        limit,
+                        init,
+                        idx,
+                    } => {
+                        write!(f, "for ")?;
+                        self.write_var(idx, f)?;
+                        write!(f, " = ")?;
+                        self.write_vc(init, f)?;
+                        write!(f, ", ")?;
+                        self.write_vc(limit, f)?;
+                        write!(f, ", ")?;
+                        self.write_vc(step, f)?;
+                        writeln!(f, " do")?;
+                    }
+                    ControlCode::While(cond) => {
+                        write!(f, "while ")?;
+                        self.write_conditional(cond, f)?;
+                        writeln!(f, " do")?;
+                    }
+                    ControlCode::If(cond) => {
+                        write!(f, "if ")?;
+                        self.write_conditional(cond, f)?;
+                        writeln!(f, " then")?;
+                    }
+                    ControlCode::Until(_) => todo!(),
+                },
+                SourceControl::Node(node) => {
+                    self.print_node(&self.tree.nodes[node], f)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn add_control(&mut self, control: ControlCode) {
@@ -64,7 +365,20 @@ impl SourceBuilder<'_> {
                 self.current_scope = self.scopes.subscope(self.scopes.parent(self.current_scope));
             }
             ControlCode::EndsPastLoop => todo!(),
-            ControlCode::If(_) | ControlCode::While(_) | ControlCode::For | ControlCode::Repeat => {
+            ControlCode::If(_)
+            | ControlCode::While(_)
+            | ControlCode::For {
+                step: _,
+                limit: _,
+                init: _,
+                idx: _,
+            }
+            | ControlCode::TFor {
+                call: _,
+                index: _,
+                state: _,
+            }
+            | ControlCode::Repeat => {
                 // Make a new subscope
                 self.current_scope = self.scopes.subscope(self.current_scope);
             }
@@ -201,7 +515,17 @@ pub enum ControlCode {
     Continue,
     EndsPastLoop,
     Repeat,
-    For,
+    TFor {
+        call: OperationId,
+        index: VariableRef,
+        state: VariableRef,
+    },
+    For {
+        step: VarConst,
+        limit: VarConst,
+        init: VarConst,
+        idx: VariableRef,
+    },
     While(Conditional),
     If(Conditional),
     Until(Conditional),
@@ -209,9 +533,9 @@ pub enum ControlCode {
 
 #[derive(Debug)]
 pub struct NodeFlow<'a> {
-    source: SourceBuilder<'a>,
+    pub source: SourceBuilder<'a>,
     flowed: HashSet<usize>,
-    pub current: usize,
+    current: usize,
     tree: &'a IrTree,
     flow: Vec<Flow>,
 }
@@ -501,18 +825,11 @@ impl NodeFlow<'_> {
                             )));
                     }
                 }
-                Tail::TForLoop {
-                    call: _,
-                    index: _,
-                    state: _,
-                    inner,
-                    end,
-                }
-                | Tail::ForLoop {
-                    init: _,
-                    limit: _,
-                    step: _,
-                    idx: _,
+                Tail::ForLoop {
+                    ref init,
+                    ref limit,
+                    ref step,
+                    ref idx,
                     inner,
                     end,
                 } => {
@@ -521,7 +838,30 @@ impl NodeFlow<'_> {
                         end,
                     });
                     self.current = inner;
-                    self.source.add_control(ControlCode::For);
+                    self.source.add_control(ControlCode::For {
+                        step: step.clone(),
+                        limit: limit.clone(),
+                        init: init.clone(),
+                        idx: idx.clone(),
+                    });
+                }
+                Tail::TForLoop {
+                    call,
+                    ref index,
+                    ref state,
+                    inner,
+                    end,
+                } => {
+                    self.flow.push(Flow::For {
+                        cond: self.current,
+                        end,
+                    });
+                    self.current = inner;
+                    self.source.add_control(ControlCode::TFor {
+                        call,
+                        index: index.clone(),
+                        state: state.clone(),
+                    });
                 }
             };
             if self.check_last_flows() {
@@ -529,12 +869,12 @@ impl NodeFlow<'_> {
             }
         }
     }
-}
 
-pub fn generate_scope(tree: &IrTree) {
-    let mut flow = NodeFlow::new(&tree);
-    flow.next();
-    println!("Source: {:#?}", flow.source);
+    pub fn generate(tree: &IrTree) -> NodeFlow {
+        let mut flow = NodeFlow::new(tree);
+        flow.next();
+        flow
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

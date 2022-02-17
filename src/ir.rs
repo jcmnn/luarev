@@ -129,7 +129,7 @@ pub struct ConstantId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of an upvalue
-pub struct UpvalueId(usize);
+pub struct UpvalueId(pub usize);
 
 impl From<usize> for UpvalueId {
     fn from(id: usize) -> Self {
