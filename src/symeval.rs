@@ -40,6 +40,7 @@ pub struct SourceBuilder<'a> {
     scopes: ScopeTree,
     current_scope: ScopeId,
     node_scope: HashMap<usize, ScopeId>,
+    solver: &'a VariableSolver,
 }
 
 impl Display for SourceBuilder<'_> {
@@ -49,7 +50,7 @@ impl Display for SourceBuilder<'_> {
 }
 
 impl SourceBuilder<'_> {
-    pub fn new(tree: &IrTree) -> SourceBuilder {
+    pub fn new<'a>(tree: &'a IrTree, solver: &'a VariableSolver) -> SourceBuilder<'a> {
         let mut scopes = ScopeTree::new();
         SourceBuilder {
             tree,
@@ -57,11 +58,12 @@ impl SourceBuilder<'_> {
             current_scope: scopes.root(),
             scopes,
             node_scope: HashMap::new(),
+            solver,
         }
     }
 
     fn write_var(&self, var: &VariableRef, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "var_{}", var.0)
+        write!(f, "var_{}", self.solver.references[var.0].0)
     }
 
     fn write_vc(&self, var: &VarConst, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -541,9 +543,9 @@ pub struct NodeFlow<'a> {
 }
 
 impl NodeFlow<'_> {
-    pub fn new(tree: &IrTree) -> NodeFlow {
+    pub fn new<'a>(tree: &'a IrTree, solver: &'a VariableSolver) -> NodeFlow<'a> {
         NodeFlow {
-            source: SourceBuilder::new(tree),
+            source: SourceBuilder::new(tree, solver),
             flowed: HashSet::new(),
             current: 0,
             tree,
@@ -870,8 +872,8 @@ impl NodeFlow<'_> {
         }
     }
 
-    pub fn generate(tree: &IrTree) -> NodeFlow {
-        let mut flow = NodeFlow::new(tree);
+    pub fn generate<'a>(tree: &'a IrTree, solver: &'a VariableSolver) -> NodeFlow<'a> {
+        let mut flow = NodeFlow::new(tree, solver);
         flow.next();
         flow
     }

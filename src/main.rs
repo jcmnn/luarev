@@ -22,7 +22,8 @@ fn main() {
 
     // decompile::decompile(root, f.clone()).unwrap();
     let tree = lifter::lift(&f, &mut solver).unwrap();
-    let flow = NodeFlow::generate(&tree);
+    solver.minimize(&tree);
+    let flow = NodeFlow::generate(&tree, &solver);
     println!("{}", flow.source);
     //println!("{:#?}", tree);
     
