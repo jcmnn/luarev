@@ -208,8 +208,9 @@ pub enum Tail {
 }
 
 #[derive(Debug)]
-struct Variable {
-    references: Vec<VariableRef>,
+pub struct Variable {
+    pub references: Vec<VariableRef>,
+    pub last_value: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -259,9 +260,22 @@ impl VariableSolver {
         let ref_id = VariableRef(self.references.len());
         self.variables.push(Variable {
             references: Vec::from_iter([ref_id.clone()]),
+            last_value: None,
         });
         self.references.push(var_id);
         ref_id
+    }
+
+    pub fn set_last_value(&mut self, var: &VariableRef, value: Value) {
+        self.variables[self.references[var.0].0].last_value = Some(value);
+    }
+
+    pub fn last_value(&self, var: &VariableRef) -> Option<&Value> {
+        self.variables[self.references[var.0].0].last_value.as_ref()
+    }
+
+    pub fn get_variable(&self, var: &VariableRef) -> &Variable {
+        &self.variables[self.references[var.0].0]
     }
 }
 
@@ -372,7 +386,9 @@ impl IrNodeBuilder<'_> {
             self.stack.resize(idx.0 + 1, None);
         }
         self.stack[idx.0] = Some(val.clone());
-        let op = Operation::SetStack(self.reference_stack(idx), val);
+        let vref = self.reference_stack(idx);
+        self.solver.set_last_value(&vref, val.clone());
+        let op = Operation::SetStack(vref, val);
         self.operations.push(op);
     }
 
@@ -789,10 +805,6 @@ impl IrNodeBuilder<'_> {
                 .collect(),
         };
         self.tail = Tail::Return(results);
-    }
-
-    pub fn var_label(&self, var: VariableId) -> String {
-        format!("var{}", var.0)
     }
 
     /*
