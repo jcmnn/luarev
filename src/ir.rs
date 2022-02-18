@@ -208,7 +208,7 @@ pub enum Tail {
 }
 
 #[derive(Debug)]
-struct Variable {
+pub struct Variable {
     references: Vec<VariableRef>,
 }
 
@@ -222,8 +222,8 @@ pub struct VariableRef(pub usize);
 
 #[derive(Debug)]
 pub struct VariableSolver {
-    variables: Vec<Variable>,
-    references: Vec<VariableId>,
+    pub variables: Vec<Variable>,
+    pub references: Vec<VariableId>,
 }
 
 impl VariableSolver {
@@ -234,7 +234,32 @@ impl VariableSolver {
         }
     }
 
-    pub fn combine(&mut self, to: VariableRef, from: VariableRef) {
+    fn minimize_impl(&mut self, tree: &IrTree, reg: StackId, node: usize, to: &VariableRef, checked: &mut HashSet<usize>) {
+        if !checked.insert(node) {
+            return;
+        }
+        if let Some(v) = tree.nodes[&node].variables.get(&reg) {
+            self.combine(to, v);
+            return;
+        }
+
+        for n in &tree.prev[&node] {
+            if *n == usize::MAX {
+                continue;
+            }
+            self.minimize_impl(tree, reg, *n, to, checked);
+        }
+    }
+
+    pub fn minimize(&mut self, tree: &IrTree) {
+        for (nid, n) in &tree.nodes {
+            for (sid, vref) in &n.references {
+                self.minimize_impl(tree, *sid, *nid, vref, &mut HashSet::new());
+            }
+        }
+    }
+
+    pub fn combine(&mut self, to: &VariableRef, from: &VariableRef) {
         let to = self.references[to.0];
         let from = self.references[from.0];
         let to_combine = std::mem::replace(&mut self.variables[from.0].references, Vec::new());
@@ -372,7 +397,7 @@ impl IrNodeBuilder<'_> {
             self.stack.resize(idx.0 + 1, None);
         }
         self.stack[idx.0] = Some(val.clone());
-        let op = Operation::SetStack(self.reference_stack(idx), val);
+        let op = Operation::SetStack(self.modify_stack(idx), val);
         self.operations.push(op);
     }
 
