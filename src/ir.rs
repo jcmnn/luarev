@@ -7,7 +7,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::function::{Constant, LvmInstruction};
+use crate::function::{Constant, LvmInstruction, Function};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -263,6 +263,9 @@ impl VariableSolver {
     pub fn combine(&mut self, to: &VariableRef, from: &VariableRef) {
         let to = self.references[to.0];
         let from = self.references[from.0];
+        if let Some(lv) = &self.variables[from.0].last_value {
+            self.variables[to.0].last_value = Some(lv.clone());
+        }
         let to_combine = std::mem::replace(&mut self.variables[from.0].references, Vec::new());
         self.variables[to.0]
             .references
@@ -411,7 +414,7 @@ impl IrNodeBuilder<'_> {
             self.stack.resize(idx.0 + 1, None);
         }
         self.stack[idx.0] = Some(val.clone());
-        let vref = self.reference_stack(idx);
+        let vref = self.modify_stack(idx);
         self.solver.set_last_value(&vref, val.clone());
         let op = Operation::SetStack(vref, val);
         self.operations.push(op);
@@ -962,20 +965,22 @@ impl IrNodeBuilder<'_> {
 }
 
 #[derive(Debug)]
-pub struct IrTree {
+pub struct IrTree<'a> {
     pub nodes: HashMap<usize, IrNode>,
     pub next: HashMap<usize, Vec<usize>>,
     pub prev: HashMap<usize, Vec<usize>>,
-    pub closures: Vec<IrTree>,
+    pub func: &'a Function,
+    pub closures: Vec<IrTree<'a>>,
     pub statics: HashSet<StackId>,
 }
 
-impl IrTree {
-    pub fn new() -> IrTree {
+impl IrTree<'_> {
+    pub fn new(func: &Function) -> IrTree {
         IrTree {
             nodes: HashMap::new(),
             next: HashMap::new(),
             prev: HashMap::new(),
+            func,
             closures: Vec::new(),
             statics: HashSet::new(),
         }

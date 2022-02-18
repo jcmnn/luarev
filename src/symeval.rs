@@ -35,7 +35,7 @@ pub enum SourceControl {
 
 #[derive(Debug)]
 pub struct SourceBuilder<'a> {
-    pub tree: &'a IrTree,
+    pub tree: &'a IrTree<'a>,
     pub source: Vec<SourceControl>,
     scopes: ScopeTree,
     current_scope: ScopeId,
@@ -62,15 +62,22 @@ impl SourceBuilder<'_> {
         }
     }
 
-    fn write_var(&self, var: &VariableRef, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "var_{}", self.solver.references[var.0].0)
+    fn write_var(&self, vref: &VariableRef, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let var = self.solver.get_variable(vref);
+        let last_value = var.last_value.as_ref();
+        if var.references.len() > 2 || last_value.is_none() {
+            write!(f, "var_{}", self.solver.references[vref.0].0)?;
+        } else {
+            self.write_value(last_value.unwrap(), f)?;
+        }
+        Ok(())
     }
 
     fn write_vc(&self, var: &VarConst, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match var {
             VarConst::Var(vref) => self.write_var(vref, f)?,
             VarConst::UpValue(upv) => write!(f, "upval_{}", upv.0)?,
-            VarConst::Constant(cid) => write!(f, "const_{}", cid.0)?,
+            VarConst::Constant(cid) => write!(f, "{}", self.tree.func.constants[cid.0])?,
             VarConst::VarArgs => write!(f, "...")?,
             VarConst::VarCall(_) => write!(f, "...")?,
         };
@@ -203,7 +210,7 @@ impl SourceBuilder<'_> {
                 write!(f, "idx")?;
             }
             Value::Global(cid) => {
-                write!(f, "global_cid_{}", cid.0)?;
+                write!(f, "_G[{}]", self.tree.func.constants[cid.0])?;
             }
             Value::VarArgs => write!(f, "...")?,
             Value::Arg(_) => {}
@@ -240,10 +247,12 @@ impl SourceBuilder<'_> {
         for op in &node.operations {
             match op {
                 crate::ir::Operation::SetStack(dst, val) => {
-                    self.write_var(dst, f)?;
-                    write!(f, " = ")?;
-                    self.write_value(val, f)?;
-                    writeln!(f)?;
+                    if self.solver.get_variable(dst).references.len() > 2 {
+                        self.write_var(dst, f)?;
+                        write!(f, " = ")?;
+                        self.write_value(val, f)?;
+                        writeln!(f)?;
+                    }
                 }
                 crate::ir::Operation::Call {
                     func,
@@ -264,12 +273,12 @@ impl SourceBuilder<'_> {
                     writeln!(f)?;
                 }
                 crate::ir::Operation::SetGlobal(cid, vc) => {
-                    write!(f, "gbl_{} = ", cid.0)?;
+                    write!(f, "_G[{}] = ", self.tree.func.constants[cid.0])?;
                     self.write_vc(vc, f)?;
                     writeln!(f)?;
                 }
                 crate::ir::Operation::SetCGlobal(cid, vc) => {
-                    write!(f, "cgbl_{} = ", cid.0)?;
+                    write!(f, "_CG[{}] = ", self.tree.func.constants[cid.0])?;
                     self.write_vc(vc, f)?;
                     writeln!(f)?;
                 }
@@ -538,7 +547,7 @@ pub struct NodeFlow<'a> {
     pub source: SourceBuilder<'a>,
     flowed: HashSet<usize>,
     current: usize,
-    tree: &'a IrTree,
+    tree: &'a IrTree<'a>,
     flow: Vec<Flow>,
 }
 

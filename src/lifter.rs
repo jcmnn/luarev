@@ -460,11 +460,11 @@ fn lift_node(
     Ok(())
 }
 
-pub fn lift(func: &Function, solver: &mut VariableSolver) -> Result<IrTree, LifterError> {
+pub fn lift<'a, 'b>(func: &'a Function, solver: &'b mut VariableSolver) -> Result<IrTree<'a>, LifterError> {
     let code_flow = CodeFlow::generate(func)?;
     let node_heads = code_flow.nodes();
 
-    let mut tree = IrTree::new();
+    let mut tree = IrTree::new(func);
 
     for head in node_heads {
         lift_node(func, head, &code_flow, solver, &mut tree)?;
