@@ -5,7 +5,10 @@ use thiserror::Error;
 
 use crate::{
     function::{Function, LvmInstruction, OpCode},
-    ir::{ConditionalB, ConstantId, IrNodeBuilder, IrTree, RegConst, StackId, Tail, UpvalueId, Value, VariableSolver},
+    ir::{
+        ConditionalB, ConstantId, IrNodeBuilder, IrTree, RegConst, StackId, Tail, UpvalueId, Value,
+        VariableSolver,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -289,7 +292,7 @@ fn lift_node(
                 let table = RegConst::Stack(StackId::from(i.argb()));
                 let key = stack_or_const(i.argc());
                 let symbol = Value::Symbol(node.reference_regconst(table));
-                node.set_stack(StackId::from(i.arga() + 1), symbol);
+                node.set_stack(StackId::from(i.arga() + 1), symbol, true);
                 node.get_table(StackId::from(i.arga()), table, key);
             }
             OpCode::Sub => {
@@ -460,14 +463,34 @@ fn lift_node(
     Ok(())
 }
 
-pub fn lift<'a, 'b>(func: &'a Function, solver: &'b mut VariableSolver) -> Result<IrTree<'a>, LifterError> {
+pub fn lift<'a, 'b>(
+    func: &'a Function,
+    solver: &'b mut VariableSolver,
+) -> Result<IrTree<'a>, LifterError> {
     let code_flow = CodeFlow::generate(func)?;
     let node_heads = code_flow.nodes();
 
     let mut tree = IrTree::new(func);
 
+    {
+        // Root node with upvalues and params
+        let mut builder = IrNodeBuilder::new(solver);
+        for i in 0..func.num_params {
+            builder.modify_stack(StackId::from(i));
+        }
+
+        tree.add_node(usize::MAX, builder.build());
+    }
+
     for head in node_heads {
         lift_node(func, head, &code_flow, solver, &mut tree)?;
+    }
+
+    // Connect root to first node
+    tree.connect_node(usize::MAX, 0);
+
+    for closure in &func.closures {
+        tree.closures.push(lift(&closure, solver)?);
     }
 
     Ok(tree)

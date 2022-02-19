@@ -41,6 +41,7 @@ pub struct SourceBuilder<'a> {
     current_scope: ScopeId,
     node_scope: HashMap<usize, ScopeId>,
     solver: &'a VariableSolver,
+    closures: Vec<NodeFlow<'a>>,
 }
 
 impl Display for SourceBuilder<'_> {
@@ -59,6 +60,7 @@ impl SourceBuilder<'_> {
             scopes,
             node_scope: HashMap::new(),
             solver,
+            closures: Vec::new(),
         }
     }
 
@@ -199,7 +201,21 @@ impl SourceBuilder<'_> {
                 self.write_vc(key, f)?;
                 write!(f, "]")?;
             }
-            Value::Closure { index, upvalues } => todo!(),
+            Value::Closure { index, upvalues } => {
+                // TODO: Do stuff with upvalues
+                write!(f, "function (")?;
+                let closure = &self.closures[*index];
+                for i in 0..closure.tree.func.num_params {
+                    if i != 0 {
+                        write!(f, ", ")?;
+                    }
+                    let v = &closure.tree.nodes[&usize::MAX].variables[&StackId::from(i)];
+                    self.write_var(v, f)?;
+                }
+                writeln!(f, ")")?;
+                closure.source.print(f)?;
+                writeln!(f, "end")?;
+            },
             Value::Table(id) => {
                 write!(f, "{{unimplemented}}")?;
             }
@@ -601,6 +617,13 @@ impl NodeFlow<'_> {
             common.insert(second);
         }
 
+        assert!(!(common.contains(&first) && common.contains(&second)));
+
+        if common.len() > 1 {
+            common.remove(&second);
+            common.remove(&first);
+        }
+
         for i in &self.tree.next[&second] {
             if common.contains(i) {
                 continue;
@@ -614,7 +637,7 @@ impl NodeFlow<'_> {
         let mut cache = HashSet::new();
         cache.insert(first);
         self.common_ends_impl(first, second, &mut cache, &mut common);
-        common.remove(&second);
+        //common.remove(&second);
         Vec::from_iter(common)
     }
 
@@ -627,18 +650,18 @@ impl NodeFlow<'_> {
                     | Flow::Repeat { cond, end }
                     | Flow::For { cond, end } => {
                         if *end == self.current {
-                            if i != 0 {
+                            /*if i != 0 {*/
                                 self.source.add_control(ControlCode::Break);
                                 if self.end_last_flow() {
                                     return true;
                                 }
                                 // Break
-                            } else {
+                            /*} else {
                                 if self.end_last_flow() {
                                     return true;
                                 }
                                 // End
-                            }
+                            }*/
                             continue 'outer;
                         } else if *cond == self.current {
                             if i != 0 {
@@ -822,6 +845,8 @@ impl NodeFlow<'_> {
                         let common = self.common_ends(target_1, target_2);
                         println!("Common nodes: {:?}", common);
                         if common.len() != 1 {
+                            println!("{target_1}, {target_2}");
+                            println!("{:#?}", self.tree.next);
                             todo!();
                         }
                         self.flow.push(Flow::IfElse {
@@ -884,6 +909,9 @@ impl NodeFlow<'_> {
     pub fn generate<'a>(tree: &'a IrTree, solver: &'a VariableSolver) -> NodeFlow<'a> {
         let mut flow = NodeFlow::new(tree, solver);
         flow.next();
+        for closure in &tree.closures {
+            flow.source.closures.push(Self::generate(closure, solver));
+        }
         flow
     }
 }

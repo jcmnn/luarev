@@ -7,7 +7,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::function::{Constant, LvmInstruction, Function};
+use crate::function::{Constant, Function, LvmInstruction};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -235,7 +235,14 @@ impl VariableSolver {
         }
     }
 
-    fn minimize_impl(&mut self, tree: &IrTree, reg: StackId, node: usize, to: &VariableRef, checked: &mut HashSet<usize>) {
+    fn minimize_impl(
+        &mut self,
+        tree: &IrTree,
+        reg: StackId,
+        node: usize,
+        to: &VariableRef,
+        checked: &mut HashSet<usize>,
+    ) {
         if !checked.insert(node) {
             return;
         }
@@ -245,9 +252,9 @@ impl VariableSolver {
         }
 
         for n in &tree.prev[&node] {
-            if *n == usize::MAX {
+            /*if *n == usize::MAX {
                 continue;
-            }
+            }*/
             self.minimize_impl(tree, reg, *n, to, checked);
         }
     }
@@ -376,13 +383,9 @@ impl IrNodeBuilder<'_> {
     }
 
     pub fn modify_stack(&mut self, id: StackId) -> VariableRef {
-        if let Some(var) = self.variables.get(&id) {
-            self.solver.reference(var)
-        } else {
-            let var = self.solver.new_variable();
-            self.variables.insert(id, var.clone());
-            var
-        }
+        let var = self.solver.new_variable();
+        self.variables.insert(id, var.clone());
+        var
     }
 
     // Get last stack symbols from base to the first vararg
@@ -409,15 +412,18 @@ impl IrNodeBuilder<'_> {
     }
 
     // Set most recent value on a stack variable
-    pub fn set_stack(&mut self, idx: StackId, val: Value) {
+    pub fn set_stack(&mut self, idx: StackId, val: Value, add_op: bool) -> VariableRef {
         if idx.0 >= self.stack.len() {
             self.stack.resize(idx.0 + 1, None);
         }
         self.stack[idx.0] = Some(val.clone());
         let vref = self.modify_stack(idx);
         self.solver.set_last_value(&vref, val.clone());
-        let op = Operation::SetStack(vref, val);
-        self.operations.push(op);
+        if add_op {
+            let op = Operation::SetStack(vref.clone(), val);
+            self.operations.push(op);
+        }
+        vref
     }
 
     // Get most recent value set on stack
@@ -448,45 +454,45 @@ impl IrNodeBuilder<'_> {
     pub fn add(&mut self, dst: StackId, left: RegConst, right: RegConst) {
         let left = self.reference_regconst(left);
         let right = self.reference_regconst(right);
-        self.set_stack(dst, Value::Add { left, right });
+        self.set_stack(dst, Value::Add { left, right }, true);
     }
 
     pub fn sub(&mut self, dst: StackId, left: RegConst, right: RegConst) {
         let left = self.reference_regconst(left);
         let right = self.reference_regconst(right);
-        self.set_stack(dst, Value::Sub { left, right });
+        self.set_stack(dst, Value::Sub { left, right }, true);
     }
 
     pub fn pow(&mut self, dst: StackId, left: RegConst, right: RegConst) {
         let left = self.reference_regconst(left);
         let right = self.reference_regconst(right);
-        self.set_stack(dst, Value::Pow { left, right });
+        self.set_stack(dst, Value::Pow { left, right }, true);
     }
 
     pub fn mul(&mut self, dst: StackId, left: RegConst, right: RegConst) {
         let left = self.reference_regconst(left);
         let right = self.reference_regconst(right);
-        self.set_stack(dst, Value::Mul { left, right });
+        self.set_stack(dst, Value::Mul { left, right }, true);
     }
 
     pub fn div(&mut self, dst: StackId, left: RegConst, right: RegConst) {
         let left = self.reference_regconst(left);
         let right = self.reference_regconst(right);
-        self.set_stack(dst, Value::Div { left, right });
+        self.set_stack(dst, Value::Div { left, right }, true);
     }
 
     pub fn modulus(&mut self, dst: StackId, left: RegConst, right: RegConst) {
         let left = self.reference_regconst(left);
         let right = self.reference_regconst(right);
-        self.set_stack(dst, Value::Mod { left, right });
+        self.set_stack(dst, Value::Mod { left, right }, true);
     }
 
     pub fn number(&mut self, dst: StackId, n: f32) {
-        self.set_stack(dst, Value::Number(n));
+        self.set_stack(dst, Value::Number(n), true);
     }
 
     pub fn load_constant(&mut self, dst: StackId, constant: ConstantId) {
-        self.set_stack(dst, Value::Symbol(VarConst::Constant(constant)));
+        self.set_stack(dst, Value::Symbol(VarConst::Constant(constant)), true);
     }
 
     // Makes a call. If param_count is None, the arguments are vararg
@@ -531,15 +537,15 @@ impl IrNodeBuilder<'_> {
 
         let returns = match return_count {
             None => {
-                self.set_stack(return_base, Value::Return(op_id, true));
-                [VarConst::Var(self.modify_stack(return_base))].to_vec()
+                let vref = self.set_stack(return_base, Value::Return(op_id, true), false);
+                [VarConst::Var(vref)].to_vec()
             }
             Some(count) => (0..count)
                 .map(|i| {
                     let val = Value::Return(op_id, false);
                     let return_pos = return_base + i;
-                    self.set_stack(return_pos, val);
-                    VarConst::Var(self.modify_stack(return_pos))
+                    let vref = self.set_stack(return_pos, val, false);
+                    VarConst::Var(vref)
                 })
                 .collect(),
         };
@@ -560,7 +566,7 @@ impl IrNodeBuilder<'_> {
             .map(|v| self.reference_regconst(v))
             .collect();
         let val = Value::Closure { index, upvalues };
-        self.set_stack(dst, val);
+        self.set_stack(dst, val, true);
     }
 
     pub fn concat(&mut self, dst: StackId, values: Vec<RegConst>) {
@@ -569,14 +575,14 @@ impl IrNodeBuilder<'_> {
             .map(|v| self.reference_regconst(v))
             .collect();
         let val = Value::Concat(values);
-        self.set_stack(dst, val);
+        self.set_stack(dst, val, true);
     }
 
     pub fn get_table(&mut self, dst: StackId, table: RegConst, key: RegConst) {
         let table = self.reference_regconst(table);
         let key = self.reference_regconst(key);
         let val = Value::GetTable { table, key };
-        self.set_stack(dst, val);
+        self.set_stack(dst, val, true);
     }
 
     pub fn set_table(&mut self, table: RegConst, key: RegConst, value: RegConst) {
@@ -588,7 +594,7 @@ impl IrNodeBuilder<'_> {
     }
 
     pub fn get_global(&mut self, dst: StackId, key: ConstantId) {
-        self.set_stack(dst, Value::Global(key));
+        self.set_stack(dst, Value::Global(key), true);
     }
 
     pub fn set_global(&mut self, key: ConstantId, val: RegConst) {
@@ -604,14 +610,14 @@ impl IrNodeBuilder<'_> {
     pub fn get_varargs(&mut self, dst: StackId, count: Option<usize>) {
         match count {
             None => {
-                self.set_stack(dst, Value::VarArgs);
+                self.set_stack(dst, Value::VarArgs, true);
             }
             Some(count) => {
                 let op_id = OperationId(self.operations.len());
                 let args = (0..count)
                     .map(|i| {
                         let pos = dst + i;
-                        self.set_stack(pos, Value::Arg(op_id));
+                        self.set_stack(pos, Value::Arg(op_id), false);
                         VarConst::Var(self.modify_stack(pos))
                     })
                     .collect();
@@ -623,7 +629,7 @@ impl IrNodeBuilder<'_> {
     pub fn new_table(&mut self, dst: StackId) {
         let table_id = TableId(self.tables.len());
         self.tables.push(Table(Vec::new()));
-        self.set_stack(dst, Value::Table(table_id));
+        self.set_stack(dst, Value::Table(table_id), true);
     }
 
     pub fn set_list(&mut self, table: StackId, offset: usize, count: usize) {
@@ -654,35 +660,35 @@ impl IrNodeBuilder<'_> {
 
     pub fn not(&mut self, dst: StackId, src: RegConst) {
         let src = self.reference_regconst(src);
-        self.set_stack(dst, Value::Not(src));
+        self.set_stack(dst, Value::Not(src), true);
     }
 
     pub fn len(&mut self, dst: StackId, src: RegConst) {
         let src = self.reference_regconst(src);
-        self.set_stack(dst, Value::Len(src));
+        self.set_stack(dst, Value::Len(src), true);
     }
 
     pub fn unm(&mut self, dst: StackId, src: RegConst) {
         let src = self.reference_regconst(src);
-        self.set_stack(dst, Value::Unm(src));
+        self.set_stack(dst, Value::Unm(src), true);
     }
 
     pub fn get_upvalue(&mut self, dst: StackId, id: UpvalueId) {
-        self.set_stack(dst, Value::Upvalue(id));
+        self.set_stack(dst, Value::Upvalue(id), true);
     }
 
     pub fn load_boolean(&mut self, dst: StackId, value: bool) {
-        self.set_stack(dst, Value::Boolean(value));
+        self.set_stack(dst, Value::Boolean(value), true);
     }
 
     pub fn mov(&mut self, dst: StackId, src: StackId) {
         let src = RegConst::Stack(src);
         let src = self.reference_regconst(src);
-        self.set_stack(dst, Value::Symbol(src));
+        self.set_stack(dst, Value::Symbol(src), true);
     }
 
     pub fn load_nil(&mut self, dst: StackId) {
-        self.set_stack(dst, Value::Nil);
+        self.set_stack(dst, Value::Nil, true);
     }
 
     // Returns symbol of forloop index
@@ -698,7 +704,7 @@ impl IrNodeBuilder<'_> {
         let step = self.reference_regconst(step);
         let limit = self.reference_regconst(limit);
         let init = self.reference_regconst(init);
-        self.set_stack(idx, Value::ForIndex);
+        self.set_stack(idx, Value::ForIndex, false);
         self.tail = Tail::ForLoop {
             init,
             limit,
