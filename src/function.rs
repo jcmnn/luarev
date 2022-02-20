@@ -302,6 +302,17 @@ pub enum Constant {
     String(String),
 }
 
+impl Constant {
+    pub fn write_global(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Constant::Nil => write!(f, "nil"),
+            Constant::Boolean(b) => write!(f, "{:#X}", b),
+            Constant::Number(n) => write!(f, "{}", n),
+            Constant::String(s) => write!(f, "{}", s),
+        }
+    }
+}
+
 impl Display for Constant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

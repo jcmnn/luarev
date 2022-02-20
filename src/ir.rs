@@ -121,7 +121,7 @@ pub struct TableId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of an operation
-pub struct OperationId(usize);
+pub struct OperationId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of a constant
@@ -242,21 +242,26 @@ impl VariableSolver {
         node: usize,
         to: &VariableRef,
         checked: &mut HashSet<usize>,
-    ) {
+    ) -> bool {
         if !checked.insert(node) {
-            return;
+            return true;
         }
         if let Some(v) = tree.nodes[&node].variables.get(&reg) {
             self.combine(to, v);
-            return;
+            return true;
         }
+
+        let mut found_all = !tree.prev[&node].is_empty();
 
         for n in &tree.prev[&node] {
             /*if *n == usize::MAX {
                 continue;
             }*/
-            self.minimize_impl(tree, reg, *n, to, checked);
+            if !self.minimize_impl(tree, reg, *n, to, checked) {
+                found_all = false;
+            }
         }
+        found_all
     }
 
     pub fn minimize(&mut self, tree: &IrTree) {
@@ -264,6 +269,10 @@ impl VariableSolver {
             for (sid, vref) in &n.references {
                 self.minimize_impl(tree, *sid, *nid, vref, &mut HashSet::new());
             }
+        }
+
+        for st in &tree.closures {
+            self.minimize(st);
         }
     }
 

@@ -9,7 +9,7 @@ use crate::{
     function::Function,
     ir::{
         ConditionalA, ConditionalB, IrNode, IrTree, OperationId, RegConst, StackId, Tail, Value,
-        VarConst, VariableRef, VariableSolver,
+        VarConst, VariableRef, VariableSolver, Operation,
     },
 };
 
@@ -67,7 +67,7 @@ impl SourceBuilder<'_> {
     fn write_var(&self, vref: &VariableRef, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let var = self.solver.get_variable(vref);
         let last_value = var.last_value.as_ref();
-        if var.references.len() > 2 || last_value.is_none() {
+        if var.references.len() > 2 || last_value.is_none() || matches!(last_value, Some(&Value::Return(_, false))) {
             write!(f, "var_{}", self.solver.references[vref.0].0)?;
         } else {
             self.write_value(last_value.unwrap(), f)?;
@@ -215,7 +215,7 @@ impl SourceBuilder<'_> {
                 writeln!(f, ")")?;
                 closure.source.print(f)?;
                 writeln!(f, "end")?;
-            },
+            }
             Value::Table(id) => {
                 write!(f, "{{unimplemented}}")?;
             }
@@ -226,7 +226,7 @@ impl SourceBuilder<'_> {
                 write!(f, "idx")?;
             }
             Value::Global(cid) => {
-                write!(f, "_G[{}]", self.tree.func.constants[cid.0])?;
+                self.tree.func.constants[cid.0].write_global(f)?;
             }
             Value::VarArgs => write!(f, "...")?,
             Value::Arg(_) => {}
@@ -279,7 +279,7 @@ impl SourceBuilder<'_> {
                     if !returns.is_empty() {
                         for (i, r) in returns.iter().enumerate() {
                             if i != 0 {
-                                write!(f, ",")?;
+                                write!(f, ", ")?;
                             }
                             self.write_vc(r, f)?;
                         }
@@ -289,12 +289,15 @@ impl SourceBuilder<'_> {
                     writeln!(f)?;
                 }
                 crate::ir::Operation::SetGlobal(cid, vc) => {
-                    write!(f, "_G[{}] = ", self.tree.func.constants[cid.0])?;
+                    self.tree.func.constants[cid.0].write_global(f)?;
+                    write!(f, " = ", )?;
                     self.write_vc(vc, f)?;
                     writeln!(f)?;
                 }
                 crate::ir::Operation::SetCGlobal(cid, vc) => {
-                    write!(f, "_CG[{}] = ", self.tree.func.constants[cid.0])?;
+                    write!(f, "@")?;
+                    self.tree.func.constants[cid.0].write_global(f)?;
+                    write!(f, " = ", )?;
                     self.write_vc(vc, f)?;
                     writeln!(f)?;
                 }
@@ -314,7 +317,7 @@ impl SourceBuilder<'_> {
                 crate::ir::Operation::GetVarArgs(args) => {
                     for (i, r) in args.iter().enumerate() {
                         if i != 0 {
-                            write!(f, ",")?;
+                            write!(f, ", ")?;
                         }
                         self.write_vc(r, f)?;
                     }
@@ -368,6 +371,24 @@ impl SourceBuilder<'_> {
                         writeln!(f, " then")?;
                     }
                     ControlCode::Until(_) => todo!(),
+                    ControlCode::Return(params) => {
+                        write!(f, "return ")?;
+                        for (i, r) in params.iter().enumerate() {
+                            if i != 0 {
+                                write!(f, ", ")?;
+                            }
+                            self.write_vc(r, f)?;
+                        }
+                        writeln!(f)?;
+                    },
+                    ControlCode::TailCall(node, op) => {
+                        write!(f, "return ")?;
+                        let op = &self.tree.nodes[node].operations[op.0];
+                        if let Operation::Call{func, is_multiret, params, returns} = op {
+                            self.write_call(func, params, f)?;
+                        }
+                        writeln!(f)?;
+                    },
                 },
                 SourceControl::Node(node) => {
                     self.print_node(&self.tree.nodes[node], f)?;
@@ -554,6 +575,8 @@ pub enum ControlCode {
         idx: VariableRef,
     },
     While(Conditional),
+    Return(Vec<VarConst>),
+    TailCall(usize, OperationId),
     If(Conditional),
     Until(Conditional),
 }
@@ -651,11 +674,11 @@ impl NodeFlow<'_> {
                     | Flow::For { cond, end } => {
                         if *end == self.current {
                             /*if i != 0 {*/
-                                self.source.add_control(ControlCode::Break);
-                                if self.end_last_flow() {
-                                    return true;
-                                }
-                                // Break
+                            self.source.add_control(ControlCode::Break);
+                            if self.end_last_flow() {
+                                return true;
+                            }
+                            // Break
                             /*} else {
                                 if self.end_last_flow() {
                                     return true;
@@ -713,31 +736,46 @@ impl NodeFlow<'_> {
         false
     }
 
+    // Returns end point of flow on top of the stack
+    fn last_flow_end(&self) -> Option<usize> {
+        if let Some(last) = self.flow.last() {
+            match last {
+                Flow::While { cond, end }
+                | Flow::Repeat { cond, end }
+                | Flow::For { cond, end } => Some(*end),
+                Flow::If { a, end } => Some(*end),
+                Flow::IfElse { a, b, end } => Some(*end),
+                Flow::Else { a, end } => Some(*end),
+            }
+        } else {
+            None
+        }
+    }
+
     // Returns true if function ended
     fn end_last_flow(&mut self) -> bool {
         if let Some(last) = self.flow.pop() {
             match last {
-                Flow::While { cond, end }
-                | Flow::Repeat { cond, end }
-                | Flow::For { cond, end } => {
+                Flow::While { cond: _, end }
+                | Flow::Repeat { cond: _, end }
+                | Flow::For { cond: _, end }
+                | Flow::If { a: _, end }
+                | Flow::Else { a: _, end } => {
                     self.current = end;
                     self.source.add_control(ControlCode::End);
                 }
-                Flow::If { a, end } => {
-                    self.current = end;
-                    self.source.add_control(ControlCode::End);
-                }
-                Flow::IfElse { a, b, end } => {
+                Flow::IfElse { a: _, b, end } => {
                     self.flow.push(Flow::Else { a: b, end });
                     self.current = b;
                     self.source.add_control(ControlCode::Else);
                 }
-                Flow::Else { a, end } => {
-                    self.current = end;
-                    self.source.add_control(ControlCode::End);
-                }
             }
-            false
+            if self.current == usize::MAX {
+                self.source.add_control(ControlCode::EndFunction);
+                true
+            } else {
+                false
+            }
         } else {
             self.source.add_control(ControlCode::EndFunction);
             true
@@ -757,7 +795,16 @@ impl NodeFlow<'_> {
                     let next_node = self.tree.next[&self.current].first().unwrap();
                     self.current = *next_node;
                 }
-                Tail::Return(_) | Tail::TailCall(_) => {
+                Tail::Return(ref returns) => {
+                    self.source
+                            .add_control(ControlCode::Return(returns.clone()));
+                    if self.end_last_flow() {
+                        return;
+                    }
+                }
+                Tail::TailCall(op) => {
+                    self.source
+                            .add_control(ControlCode::TailCall(self.current, op));
                     if self.end_last_flow() {
                         return;
                     }
@@ -844,15 +891,18 @@ impl NodeFlow<'_> {
                         // If-else ?
                         let common = self.common_ends(target_1, target_2);
                         println!("Common nodes: {:?}", common);
-                        if common.len() != 1 {
+                        let end = if common.len() == 1 {
+                            *common.first().unwrap()
+                        } else {
+                            // In this case, one branch probably returns
                             println!("{target_1}, {target_2}");
                             println!("{:#?}", self.tree.next);
-                            todo!();
-                        }
+                            self.last_flow_end().unwrap_or(usize::MAX)
+                        };
                         self.flow.push(Flow::IfElse {
                             a: target_1,
                             b: target_2,
-                            end: *common.first().unwrap(),
+                            end,
                         });
                         self.current = target_1;
                         self.source
