@@ -708,7 +708,7 @@ impl NodeFlow<'_> {
                     }
                     Flow::If { a, end } | Flow::Else { a, end } if *end == self.current => {
                         if i != 0 {
-                            panic!("Code breaks from non-immediate if");
+                            println!("Code breaks from non-immediate if");
                         }
                         self.current = *end;
                         if self.end_last_flow() {

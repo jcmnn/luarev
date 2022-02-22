@@ -547,7 +547,7 @@ impl CodeFlow {
                 OpCode::LoadBool => {
                     if i.argc() != 0 {
                         flow.add_branch(offset, offset + 2)?;
-                        iter.next();
+                        //iter.next();
                     } else {
                         flow.add_branch(offset, offset + 1)?;
                     }
