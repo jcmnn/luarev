@@ -6,8 +6,8 @@ use thiserror::Error;
 use crate::{
     function::{Function, LvmInstruction, OpCode},
     ir::{
-        ConditionalB, ConstantId, IrNodeBuilder, IrTree, RegConst, StackId, Tail, UpvalueId, Value,
-        VariableSolver,
+        ConditionalB, ConstantId, IrNodeBuilder, IrFunction, RegConst, StackId, Tail, UpvalueId, Value,
+        VariableSolver, IrNode,
     },
 };
 
@@ -44,14 +44,14 @@ fn stack_or_const(r: u32) -> RegConst {
     RegConst::Stack(StackId::from(r))
 }
 
-fn lift_node(
-    func: &Function,
+fn lift_node<'a, 'b>(
+    func: &'b Function,
     head: usize,
-    flow: &CodeFlow,
-    solver: &mut VariableSolver,
-    tree: &mut IrTree,
+    flow: &'b CodeFlow,
+    solver: &'b mut VariableSolver,
+    tree: &'b mut IrFunction<'a>,
 ) -> Result<(), LifterError> {
-    let mut node = IrNodeBuilder::new(solver);
+    let mut node = IrNodeBuilder::new(head, tree, solver);
     let mut offset = head;
 
     loop {
@@ -79,7 +79,7 @@ fn lift_node(
                             OpCode::Move => {
                                 let reg = StackId::from(upi.argb());
                                 // Set register as static
-                                tree.add_static(reg);
+                                // tree.add_static(reg);
                                 Ok(RegConst::Stack(reg))
                             }
                             _ => Err(LifterError::InvalidUpvalue),
@@ -427,70 +427,35 @@ fn lift_node(
         }
     }
 
-    match &node.tail {
-        Tail::None => tree.connect_node(head, *flow.forward[offset].first().unwrap()),
-        Tail::Return(_) => {}
-        Tail::TailCall(_) => {}
-        Tail::Eq(cond) | Tail::Le(cond) | Tail::Lt(cond) => {
-            tree.connect_node(head, cond.target_1);
-            tree.connect_node(head, cond.target_2);
-        }
-        Tail::TestSet(cond, _) | Tail::Test(cond) => {
-            tree.connect_node(head, cond.target_1);
-            tree.connect_node(head, cond.target_2);
-        }
-        Tail::TForLoop {
-            call: _,
-            index: _,
-            state: _,
-            inner,
-            end,
-        }
-        | Tail::ForLoop {
-            init: _,
-            limit: _,
-            step: _,
-            idx: _,
-            inner,
-            end,
-        } => {
-            tree.connect_node(head, *inner);
-            tree.connect_node(head, *end);
-        }
+    if matches!(node.tail, Tail::None) {
+        node.tail_jmp(*flow.forward[offset].first().unwrap());
     }
-
-    tree.add_node(head, node.build());
     Ok(())
 }
 
 pub fn lift<'a, 'b>(
     func: &'a Function,
     solver: &'b mut VariableSolver,
-) -> Result<IrTree<'a>, LifterError> {
+) -> Result<IrFunction<'a>, LifterError> {
     let code_flow = CodeFlow::generate(func)?;
     let node_heads = code_flow.nodes();
 
-    let mut tree = IrTree::new(func);
+    let mut tree = IrFunction::new(func);
+
+    // Lift closures first
+    for closure in &func.closures {
+        tree.closures.push(lift(&closure, solver)?);
+    }
 
     {
         // Root node with upvalues and params
-        let mut builder = IrNodeBuilder::new(solver);
-        for i in 0..func.num_params {
-            builder.modify_stack(StackId::from(i));
-        }
-
-        tree.add_node(usize::MAX, builder.build());
+        tree.add_node(usize::MAX, IrNode::new_root(func.num_params, solver));
+        // Connect root to first node
+        tree.connect_node(usize::MAX, 0);
     }
 
     for head in node_heads {
         lift_node(func, head, &code_flow, solver, &mut tree)?;
-    }
-
-    // Connect root to first node
-    tree.connect_node(usize::MAX, 0);
-
-    for closure in &func.closures {
-        tree.closures.push(lift(&closure, solver)?);
     }
 
     Ok(tree)

@@ -183,6 +183,7 @@ pub struct ConditionalB {
 #[derive(Debug)]
 pub enum Tail {
     None,
+    Jmp(usize),
     Return(Vec<VarConst>),
     TailCall(OperationId),
     Eq(ConditionalB),
@@ -237,7 +238,7 @@ impl VariableSolver {
 
     fn minimize_impl(
         &mut self,
-        tree: &IrTree,
+        tree: &IrFunction,
         reg: StackId,
         node: usize,
         to: &VariableRef,
@@ -264,7 +265,7 @@ impl VariableSolver {
         found_all
     }
 
-    pub fn minimize(&mut self, tree: &IrTree) {
+    pub fn minimize(&mut self, tree: &IrFunction) {
         for (nid, n) in &tree.nodes {
             for (sid, vref) in &n.references {
                 self.minimize_impl(tree, *sid, *nid, vref, &mut HashSet::new());
@@ -335,9 +336,25 @@ pub struct IrNode {
     pub tail: Tail,
 }
 
+impl IrNode {
+    pub fn new_root(nparams: usize, solver: &mut VariableSolver) -> IrNode {
+        IrNode {
+            operations: Vec::new(),
+            tables: Vec::new(),
+            variables: (0..nparams)
+                .map(|n| (StackId(n), solver.new_variable()))
+                .collect(),
+            references: HashMap::new(),
+            tail: Tail::Jmp(0),
+        }
+    }
+}
+
 #[derive(Debug)]
-pub struct IrNodeBuilder<'a> {
-    pub solver: &'a mut VariableSolver,
+pub struct IrNodeBuilder<'a, 'b> {
+    pub id: usize,
+    pub tree: &'b mut IrFunction<'a>,
+    pub solver: &'b mut VariableSolver,
     // The most recent operations that operated on the stack
     pub stack: Vec<Option<Value>>,
     // Array of all symbols generated in this context
@@ -349,9 +366,15 @@ pub struct IrNodeBuilder<'a> {
     pub tail: Tail,
 }
 
-impl IrNodeBuilder<'_> {
-    pub fn new(solver: &mut VariableSolver) -> IrNodeBuilder {
+impl IrNodeBuilder<'_, '_> {
+    pub fn new<'a, 'b>(
+        id: usize,
+        tree: &'b mut IrFunction<'a>,
+        solver: &'b mut VariableSolver,
+    ) -> IrNodeBuilder<'a, 'b> {
         IrNodeBuilder {
+            id,
+            tree,
             solver,
             stack: Vec::new(),
             operations: Vec::new(),
@@ -362,14 +385,49 @@ impl IrNodeBuilder<'_> {
         }
     }
 
-    pub fn build(self) -> IrNode {
-        IrNode {
+    pub fn build(self) {
+        let node = IrNode {
             operations: self.operations,
             tables: self.tables,
             variables: self.variables,
             references: self.references,
             tail: self.tail,
+        };
+
+        match &node.tail {
+            Tail::Jmp(next) => self.tree.connect_node(self.id, *next),
+            Tail::None => panic!("Attempted to build node without tail"), // self.tree.connect_node(self.id, *flow.forward[offset].first().unwrap()),
+            Tail::Return(_) => {}
+            Tail::TailCall(_) => {}
+            Tail::Eq(cond) | Tail::Le(cond) | Tail::Lt(cond) => {
+                self.tree.connect_node(self.id, cond.target_1);
+                self.tree.connect_node(self.id, cond.target_2);
+            }
+            Tail::TestSet(cond, _) | Tail::Test(cond) => {
+                self.tree.connect_node(self.id, cond.target_1);
+                self.tree.connect_node(self.id, cond.target_2);
+            }
+            Tail::TForLoop {
+                call: _,
+                index: _,
+                state: _,
+                inner,
+                end,
+            }
+            | Tail::ForLoop {
+                init: _,
+                limit: _,
+                step: _,
+                idx: _,
+                inner,
+                end,
+            } => {
+                self.tree.connect_node(self.id, *inner);
+                self.tree.connect_node(self.id, *end);
+            }
         }
+
+        self.tree.add_node(self.id, node);
     }
 
     pub fn reference_stack(&mut self, id: StackId) -> VariableRef {
@@ -700,6 +758,10 @@ impl IrNodeBuilder<'_> {
         self.set_stack(dst, Value::Nil, true);
     }
 
+    pub fn tail_jmp(&mut self, next: usize) {
+        self.tail = Tail::Jmp(next);
+    }
+
     // Returns symbol of forloop index
     pub fn tail_forloop(
         &mut self,
@@ -980,21 +1042,24 @@ impl IrNodeBuilder<'_> {
 }
 
 #[derive(Debug)]
-pub struct IrTree<'a> {
+pub struct IrFunction<'a> {
     pub nodes: HashMap<usize, IrNode>,
     pub next: HashMap<usize, Vec<usize>>,
     pub prev: HashMap<usize, Vec<usize>>,
+    pub upvalues: Vec<VariableRef>,
     pub func: &'a Function,
-    pub closures: Vec<IrTree<'a>>,
+    pub closures: Vec<IrFunction<'a>>,
     pub statics: HashSet<StackId>,
 }
 
-impl IrTree<'_> {
-    pub fn new(func: &Function) -> IrTree {
-        IrTree {
+impl IrFunction<'_> {
+    pub fn new(func: &Function) -> IrFunction {
+        // let closures = func.closures.iter().map(|f| IrFunction::new(f)).collect();
+        IrFunction {
             nodes: HashMap::new(),
             next: HashMap::new(),
             prev: HashMap::new(),
+            upvalues: Vec::new(),
             func,
             closures: Vec::new(),
             statics: HashSet::new(),

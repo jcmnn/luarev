@@ -8,7 +8,7 @@ use std::{
 use crate::{
     function::Function,
     ir::{
-        ConditionalA, ConditionalB, IrNode, IrTree, OperationId, RegConst, StackId, Tail, Value,
+        ConditionalA, ConditionalB, IrNode, IrFunction, OperationId, RegConst, StackId, Tail, Value,
         VarConst, VariableRef, VariableSolver, Operation,
     },
 };
@@ -35,7 +35,7 @@ pub enum SourceControl {
 
 #[derive(Debug)]
 pub struct SourceBuilder<'a> {
-    pub tree: &'a IrTree<'a>,
+    pub tree: &'a IrFunction<'a>,
     pub source: Vec<SourceControl>,
     scopes: ScopeTree,
     current_scope: ScopeId,
@@ -51,7 +51,7 @@ impl Display for SourceBuilder<'_> {
 }
 
 impl SourceBuilder<'_> {
-    pub fn new<'a>(tree: &'a IrTree, solver: &'a VariableSolver) -> SourceBuilder<'a> {
+    pub fn new<'a>(tree: &'a IrFunction, solver: &'a VariableSolver) -> SourceBuilder<'a> {
         let mut scopes = ScopeTree::new();
         SourceBuilder {
             tree,
@@ -586,12 +586,12 @@ pub struct NodeFlow<'a> {
     pub source: SourceBuilder<'a>,
     flowed: HashSet<usize>,
     current: usize,
-    tree: &'a IrTree<'a>,
+    tree: &'a IrFunction<'a>,
     flow: Vec<Flow>,
 }
 
 impl NodeFlow<'_> {
-    pub fn new<'a>(tree: &'a IrTree, solver: &'a VariableSolver) -> NodeFlow<'a> {
+    pub fn new<'a>(tree: &'a IrFunction, solver: &'a VariableSolver) -> NodeFlow<'a> {
         NodeFlow {
             source: SourceBuilder::new(tree, solver),
             flowed: HashSet::new(),
@@ -789,11 +789,12 @@ impl NodeFlow<'_> {
             assert!(self.flowed.insert(self.current));
 
             match node.tail {
-                Tail::None => {
+                Tail::None => {}
+                Tail::Jmp(target) => {
                     // TODO: Check if this is a repeat-until loop or a break
                     // fall through
-                    let next_node = self.tree.next[&self.current].first().unwrap();
-                    self.current = *next_node;
+                    //let next_node = self.tree.next[&self.current].first().unwrap();
+                    self.current = target; //*next_node;
                 }
                 Tail::Return(ref returns) => {
                     self.source
@@ -956,7 +957,7 @@ impl NodeFlow<'_> {
         }
     }
 
-    pub fn generate<'a>(tree: &'a IrTree, solver: &'a VariableSolver) -> NodeFlow<'a> {
+    pub fn generate<'a>(tree: &'a IrFunction, solver: &'a VariableSolver) -> NodeFlow<'a> {
         let mut flow = NodeFlow::new(tree, solver);
         flow.next();
         for closure in &tree.closures {
