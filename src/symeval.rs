@@ -657,29 +657,37 @@ impl NodeFlow<'_> {
         &self,
         first: usize,
         second: usize,
+        test: usize,
         cache: &mut HashSet<usize>,
         common: &mut HashSet<usize>,
     ) {
-        if !cache.insert(second) {
+        if !cache.insert(test) {
             return;
         }
 
-        if self.node_ends_at_impl(first, second,  &HashSet::new() /*common*/, &mut HashSet::new(), true) {
-            common.insert(second);
+        // First, check if all previous nodes have been tested
+        for i in &self.tree.prev[&test] {
+            if !cache.contains(i) && self.node_ends_at(second, *i) {
+                self.common_ends_impl(first, second, *i, cache, common);
+            }
         }
 
-        assert!(!(common.contains(&first) && common.contains(&second)));
+        if self.node_ends_at_impl(first, test,  common, &mut HashSet::new(), true) {
+            common.insert(test);
+        }
+
+        assert!(!(common.contains(&first) && common.contains(&test)));
 
         if common.len() > 1 {
             //common.remove(&second);
             //common.remove(&first);
         }
 
-        for i in &self.tree.next[&second] {
+        for i in &self.tree.next[&test] {
             if common.contains(i) {
                 continue;
             }
-            self.common_ends_impl(first, *i, cache, common);
+            self.common_ends_impl(first, second, *i, cache, common);
         }
     }
 
@@ -687,7 +695,7 @@ impl NodeFlow<'_> {
         let mut common = HashSet::new();
         let mut cache = HashSet::new();
         cache.insert(first);
-        self.common_ends_impl(first, second, &mut cache, &mut common);
+        self.common_ends_impl(first, second, second, &mut cache, &mut common);
         //common.remove(&second);
         Vec::from_iter(common)
     }
@@ -814,7 +822,10 @@ impl NodeFlow<'_> {
         loop {
             self.source.add_node(self.current);
             let node = &self.tree.nodes[&self.current];
-            assert!(self.flowed.insert(self.current));
+            if self.flowed.insert(self.current) {
+                println!("Writing node multiple times... This may generate malformed source code");
+            }
+            //assert!(self.flowed.insert(self.current));
 
             match node.tail {
                 Tail::None => panic!(),
