@@ -664,15 +664,15 @@ impl NodeFlow<'_> {
             return;
         }
 
-        if self.node_ends_at_impl(first, second, common, &mut HashSet::new(), false) {
+        if self.node_ends_at_impl(first, second,  &HashSet::new() /*common*/, &mut HashSet::new(), true) {
             common.insert(second);
         }
 
         assert!(!(common.contains(&first) && common.contains(&second)));
 
         if common.len() > 1 {
-            common.remove(&second);
-            common.remove(&first);
+            //common.remove(&second);
+            //common.remove(&first);
         }
 
         for i in &self.tree.next[&second] {
@@ -874,6 +874,9 @@ impl NodeFlow<'_> {
                     target_1,
                     target_2,
                 }) => {
+                    let common = self.common_ends(target_1, target_2);
+                    println!("Common nodes: {:?}", common);
+                    
                     if self.node_ends_at(target_1, self.current) {
                         // Loop
                         self.flow.push(Flow::While {
