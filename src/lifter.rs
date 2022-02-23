@@ -430,6 +430,7 @@ fn lift_node<'a, 'b>(
     if matches!(node.tail, Tail::None) {
         node.tail_jmp(*flow.forward[offset].first().unwrap());
     }
+    node.build();
     Ok(())
 }
 
@@ -555,7 +556,7 @@ impl CodeFlow {
         // Add root node
         heads.insert(0);
 
-        for offset in 1..self.forward.len() {
+        for offset in 0..self.forward.len() {
             if self.reverse[offset].len() > 1 {
                 heads.insert(offset);
             }

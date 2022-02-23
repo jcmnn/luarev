@@ -44,7 +44,7 @@ pub enum Value {
     Not(VarConst),
     Unm(VarConst),
     Len(VarConst),
-    Return(OperationId, bool),
+    Return(OperationId, bool, usize),
     GetTable {
         table: VarConst,
         key: VarConst,
@@ -65,7 +65,7 @@ pub enum Value {
 
 impl Value {
     pub fn is_var(&self) -> bool {
-        matches!(*self, Value::VarArgs | Value::Return(_, true))
+        matches!(*self, Value::VarArgs | Value::Return(_, true, _))
     }
 }
 
@@ -212,6 +212,7 @@ pub enum Tail {
 pub struct Variable {
     pub references: Vec<VariableRef>,
     pub last_value: Option<Value>,
+    pub upvalue: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -280,6 +281,9 @@ impl VariableSolver {
     pub fn combine(&mut self, to: &VariableRef, from: &VariableRef) {
         let to = self.references[to.0];
         let from = self.references[from.0];
+        if self.variables[from.0].upvalue {
+            self.variables[to.0].upvalue = true;
+        }
         if let Some(lv) = &self.variables[from.0].last_value {
             self.variables[to.0].last_value = Some(lv.clone());
         }
@@ -306,9 +310,18 @@ impl VariableSolver {
         self.variables.push(Variable {
             references: Vec::from_iter([ref_id.clone()]),
             last_value: None,
+            upvalue: false,
         });
         self.references.push(var_id);
         ref_id
+    }
+
+    pub fn set_upvalue(&mut self, var: &VariableRef) {
+        self.variables[self.references[var.0].0].upvalue = true;
+    }
+
+    pub fn is_upvalue(&mut self, var: &VariableRef) -> bool {
+        self.variables[self.references[var.0].0].upvalue
     }
 
     pub fn set_last_value(&mut self, var: &VariableRef, value: Value) {
@@ -321,6 +334,14 @@ impl VariableSolver {
 
     pub fn get_variable(&self, var: &VariableRef) -> &Variable {
         &self.variables[self.references[var.0].0]
+    }
+
+    pub fn should_label(&self, var: &VariableRef) -> bool {
+        let var = self.get_variable(var);
+        var.references.len() > 2
+            || var.upvalue
+            || var.last_value.is_none()
+            || matches!(var.last_value, Some(Value::Return(_, false, _)))
     }
 }
 
@@ -450,6 +471,13 @@ impl IrNodeBuilder<'_, '_> {
     }
 
     pub fn modify_stack(&mut self, id: StackId) -> VariableRef {
+        // Check if variable present on the stack is an upvalue
+        if let Some(v) = self.variables.get(&id) {
+            if self.solver.is_upvalue(v) {
+                return self.solver.reference(v);
+            }
+        }
+        // Otherwise, make a new variable
         let var = self.solver.new_variable();
         self.variables.insert(id, var.clone());
         var
@@ -465,7 +493,7 @@ impl IrNodeBuilder<'_, '_> {
                         symbols.push(VarConst::VarArgs);
                         break;
                     }
-                    Value::Return(call, true) => {
+                    Value::Return(call, true, _) => {
                         symbols.push(VarConst::VarCall(call));
                         break;
                     }
@@ -582,7 +610,7 @@ impl IrNodeBuilder<'_, '_> {
                 for offset in param_base.0..self.stack.len() {
                     p.push(VarConst::Var(self.reference_stack(StackId::from(offset))));
                     let val = self.get_stack(StackId::from(offset));
-                    if matches!(val, Some(Value::VarArgs | Value::Return(_, true))) {
+                    if matches!(val, Some(Value::VarArgs | Value::Return(_, true, _))) {
                         found_va = true;
                         break;
                     }
@@ -604,12 +632,12 @@ impl IrNodeBuilder<'_, '_> {
 
         let returns = match return_count {
             None => {
-                let vref = self.set_stack(return_base, Value::Return(op_id, true), false);
+                let vref = self.set_stack(return_base, Value::Return(op_id, true, self.id), false);
                 [VarConst::Var(vref)].to_vec()
             }
             Some(count) => (0..count)
                 .map(|i| {
-                    let val = Value::Return(op_id, false);
+                    let val = Value::Return(op_id, false, self.id);
                     let return_pos = return_base + i;
                     let vref = self.set_stack(return_pos, val, false);
                     VarConst::Var(vref)
@@ -628,10 +656,19 @@ impl IrNodeBuilder<'_, '_> {
     }
 
     pub fn closure(&mut self, dst: StackId, index: usize, upvalues: Vec<RegConst>) {
-        let upvalues = upvalues
+        let upvalues: Vec<VarConst> = upvalues
             .into_iter()
             .map(|v| self.reference_regconst(v))
             .collect();
+        for upv in &upvalues {
+            if let VarConst::Var(vref) = upv {
+                self.solver.set_upvalue(vref);
+            }
+        }
+        // Add upvalues
+        assert!(self.tree.closures[index].upvalues.is_empty());
+        self.tree.closures[index].upvalues = upvalues.clone();
+
         let val = Value::Closure { index, upvalues };
         self.set_stack(dst, val, true);
     }
@@ -918,7 +955,7 @@ pub struct IrFunction<'a> {
     pub nodes: HashMap<usize, IrNode>,
     pub next: HashMap<usize, Vec<usize>>,
     pub prev: HashMap<usize, Vec<usize>>,
-    pub upvalues: Vec<VariableRef>,
+    pub upvalues: Vec<VarConst>,
     pub func: &'a Function,
     pub closures: Vec<IrFunction<'a>>,
     pub statics: HashSet<StackId>,
