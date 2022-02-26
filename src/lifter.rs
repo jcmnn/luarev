@@ -274,6 +274,7 @@ fn lift_node<'a, 'b>(
                     } else {
                         Some(nresults as usize)
                     },
+                    false,
                 );
             }
             OpCode::LoadBool => {

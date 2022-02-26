@@ -53,7 +53,7 @@ pub enum Value {
         index: usize,
         upvalues: Vec<VarConst>,
     },
-    Table(TableId),
+    Table(TableId, usize),
     //Table { items: Vec<Option<Symbol>> },
     Upvalue(UpvalueId),
     ForIndex,
@@ -77,6 +77,7 @@ pub enum Operation {
         params: Vec<VarConst>,
         returns: Vec<VarConst>,
         is_multiret: bool,
+        is_tforloop: bool,
     },
     SetGlobal(ConstantId, VarConst),
     SetCGlobal(ConstantId, VarConst),
@@ -91,7 +92,7 @@ pub enum Operation {
 }
 
 #[derive(Debug)]
-pub struct Table(Vec<Option<VarConst>>);
+pub struct Table(pub Vec<Option<VarConst>>);
 
 // IR Symbol
 #[derive(Debug, Clone, Copy)]
@@ -117,7 +118,7 @@ pub struct StackId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of a table
-pub struct TableId(usize);
+pub struct TableId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Id of an operation
@@ -599,6 +600,7 @@ impl IrNodeBuilder<'_, '_> {
         param_count: Option<usize>,
         return_base: StackId,
         return_count: Option<usize>,
+        is_tforloop: bool,
     ) -> OperationId {
         let func = self.reference_regconst(func);
         let params = match param_count {
@@ -650,6 +652,7 @@ impl IrNodeBuilder<'_, '_> {
             params,
             returns,
             is_multiret: return_count.is_none(),
+            is_tforloop,
         };
         self.operations.push(c);
         op_id
@@ -733,10 +736,14 @@ impl IrNodeBuilder<'_, '_> {
     pub fn new_table(&mut self, dst: StackId) {
         let table_id = TableId(self.tables.len());
         self.tables.push(Table(Vec::new()));
-        self.set_stack(dst, Value::Table(table_id), true);
+        self.set_stack(dst, Value::Table(table_id, self.id), true);
     }
 
     pub fn set_list(&mut self, table: StackId, offset: usize, count: usize) {
+        let table_id = match self.get_stack(table) {
+            Some(Value::Table(table_id, _)) => *table_id,
+            _ => panic!("Table does not exist on stack"),
+        };
         let table_ref = self.reference_stack(table);
 
         let symbols: Vec<VarConst> = match count {
@@ -747,12 +754,20 @@ impl IrNodeBuilder<'_, '_> {
                 symbols.reverse();
                 symbols
             }
-            _ => (0..count)
-                .rev()
+            _ => (1..count + 1)
                 .map(|i| VarConst::Var(self.reference_stack(table + i)))
                 .collect(),
         };
         assert!(!symbols.is_empty());
+
+        let table = self.table_mut(table_id).unwrap();
+        if table.0.len() < offset + symbols.len() {
+            table.0.resize(offset + symbols.len(), None);
+        }
+
+        for (dst, src) in table.0[offset..(offset + symbols.len())].iter_mut().zip(&symbols) {
+            *dst = Some(src.clone());
+        }
 
         let op = Operation::SetList(table_ref, offset, symbols);
     }
@@ -918,7 +933,7 @@ impl IrNodeBuilder<'_, '_> {
     }
 
     pub fn tail_tailcall(&mut self, func: StackId, nparams: Option<usize>) {
-        let call = self.call(RegConst::Stack(func), func + 1, nparams, func, None);
+        let call = self.call(RegConst::Stack(func), func + 1, nparams, func, None, false);
         self.tail = Tail::TailCall(call);
     }
 
@@ -929,7 +944,7 @@ impl IrNodeBuilder<'_, '_> {
         inner: usize,
         end: usize,
     ) {
-        let call = self.call(RegConst::Stack(base), base + 1, Some(2), base + 3, nresults);
+        let call = self.call(RegConst::Stack(base), base + 1, Some(2), base + 3, nresults, true);
         self.tail = Tail::TForLoop {
             call,
             index: self.reference_stack(base + 1),
