@@ -5,17 +5,17 @@ use ir::VariableSolver;
 use symeval::NodeFlow;
 
 mod function;
-mod reader;
 mod ir;
-mod symeval;
 mod lifter;
+mod reader;
+mod symeval;
 
 fn main() {
-    let f = function::load_file("/mnt/d/Darmok/Documents/Reversing/wf/B.Font/Lotus/Interface/Map.lua").unwrap();
+    let f = function::load_file("/home/jacob/unluapp/Lotus/Scripts/ContainerDropTable.lua").unwrap();
     //let f = function::load_file("/home/jacob/luarev/test.luac").unwrap();
 
     {
-        let mut file = File::create("/home/jacob/luarev/test.luad").unwrap();
+        let mut file = File::create("/home/jacob/unluapp/luarev/test.luad").unwrap();
         write!(file, "{}", &f).unwrap();
     }
 
@@ -25,8 +25,12 @@ fn main() {
     let tree = lifter::lift(&f, &mut solver).unwrap();
     solver.minimize(&tree);
     let flow = NodeFlow::generate(&tree, &solver);
-    println!("{}", flow.source);
+    {
+        let mut file = File::create("/home/jacob/unluapp/luarev/test.dec.lua").unwrap();
+        write!(file, "{}", flow.source).unwrap();
+    }
+    // println!("{}", flow.source);
     //println!("{:#?}", tree);
-    
+
     //println!("{:#?}", flow);
 }

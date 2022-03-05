@@ -78,7 +78,7 @@ impl SourceBuilder<'_> {
     fn write_vc(&self, var: &VarConst, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match var {
             VarConst::Var(vref) => self.write_var(vref, f)?,
-            VarConst::UpValue(upv) => self.write_vc(&self.tree.upvalues[upv.0], f)?,
+            VarConst::UpValue(upv) => write!(f, "upv_{}", upv.0)?, //self.write_vc(&self.tree.upvalues[upv.0], f)?,
             VarConst::Constant(cid) => write!(f, "{}", self.tree.func.constants[cid.0])?,
             VarConst::VarArgs => write!(f, "...")?,
             VarConst::VarCall(_) => write!(f, "...")?,
@@ -288,6 +288,7 @@ impl SourceBuilder<'_> {
     }
 
     fn print_node(&self, node: &IrNode, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "-- {}", node.id)?;
         for op in &node.operations {
             match op {
                 crate::ir::Operation::SetStack(dst, val) => {
@@ -334,7 +335,7 @@ impl SourceBuilder<'_> {
                     writeln!(f)?;
                 }
                 crate::ir::Operation::SetUpvalue(upv, vc) => {
-                    write!(f, "upv_{}", upv.0)?;
+                    write!(f, "upv_{} = ", upv.0)?;
                     self.write_vc(vc, f)?;
                     writeln!(f)?;
                 }
@@ -460,6 +461,7 @@ impl SourceBuilder<'_> {
                         }
                         writeln!(f)?;
                     }
+                    ControlCode::Goto(id) => writeln!(f, "goto {id}")?,
                 },
                 SourceControl::Node(node) => {
                     self.print_node(&self.tree.nodes[node], f)?;
@@ -652,6 +654,7 @@ pub enum ControlCode {
     TailCall(usize, OperationId),
     If(Conditional),
     Until(Conditional),
+    Goto(usize),
 }
 
 pub struct EndFinder<'a> {
@@ -768,16 +771,13 @@ impl NodeFlow<'_> {
         cache: &mut HashSet<usize>,
         ignore_flowed: bool,
     ) -> bool {
-        if start == end {
-            return true;
-        }
         if (ignore.contains(&start)) || !cache.insert(start) {
             return false;
         }
 
         self.tree.next[&start]
             .iter()
-            .any(|i| self.node_ends_at_impl(*i, end, ignore, cache, ignore_flowed))
+            .any(|i| end == *i || self.node_ends_at_impl(*i, end, ignore, cache, ignore_flowed))
     }
 
     fn node_ends_at(&self, start: usize, end: usize) -> bool {
@@ -914,15 +914,21 @@ impl NodeFlow<'_> {
 
     pub fn next(&mut self) {
         loop {
-            self.source.add_node(self.current);
             let node = &self.tree.nodes[&self.current];
+            self.source.add_node(self.current);
             if !self.flowed.insert(self.current) {
                 println!(
                     "Writing node {} multiple times... This may generate malformed source code",
                     self.current
                 );
-                if !matches!(node.tail, Tail::Jmp(_)) {
-                    panic!();
+                if !matches!(node.tail, Tail::Jmp(_)) && !matches!(node.tail, Tail::Return(_)) {
+                    println!("{:?}", self.tree.next);
+                    self.source.add_control(ControlCode::Goto(self.current));
+                    if self.end_last_flow() {
+                        break;
+                    } else {
+                        continue;
+                    }
                 }
             }
             //assert!(self.flowed.insert(self.current));

@@ -349,6 +349,7 @@ impl VariableSolver {
 // Context of IR instructions
 #[derive(Debug)]
 pub struct IrNode {
+    pub id: usize,
     // Array of all symbols generated in this context
     pub operations: Vec<Operation>,
     pub tables: Vec<Table>,
@@ -361,6 +362,7 @@ pub struct IrNode {
 impl IrNode {
     pub fn new_root(nparams: usize, solver: &mut VariableSolver) -> IrNode {
         IrNode {
+            id: usize::MAX,
             operations: Vec::new(),
             tables: Vec::new(),
             variables: (0..nparams)
@@ -409,6 +411,7 @@ impl IrNodeBuilder<'_, '_> {
 
     pub fn build(self) {
         let node = IrNode {
+            id: self.id,
             operations: self.operations,
             tables: self.tables,
             variables: self.variables,
