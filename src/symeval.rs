@@ -690,12 +690,9 @@ impl EndFinder<'_> {
             let count = bases
                 .iter()
                 .filter(|base| {
-                    self.flow.node_ends_at_impl(
+                    self.flow.node_ends_at(
                         **base,
                         test,
-                        &mut HashSet::new(),
-                        &mut HashSet::new(),
-                        true,
                     )
                 })
                 .count();
@@ -915,7 +912,6 @@ impl NodeFlow<'_> {
     pub fn next(&mut self) {
         loop {
             let node = &self.tree.nodes[&self.current];
-            self.source.add_node(self.current);
             if !self.flowed.insert(self.current) {
                 println!(
                     "Writing node {} multiple times... This may generate malformed source code",
@@ -931,6 +927,7 @@ impl NodeFlow<'_> {
                     }
                 }
             }
+            self.source.add_node(self.current);
             //assert!(self.flowed.insert(self.current));
 
             match node.tail {

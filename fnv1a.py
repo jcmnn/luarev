@@ -7,5 +7,5 @@ def fnv1a(s):
 with open("names.txt") as f:
     with open("codes.txt", "w") as c:
         for line in f:
-            line = line.rstrip().encode("utf-8")
+            line = line.rstrip().lstrip().encode("utf-8")
             c.write(line.decode("utf-8") + ":" + hex(fnv1a(line)) + "\n")
