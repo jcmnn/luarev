@@ -4,7 +4,7 @@ use std::{
     io::Cursor,
     io::Write,
     ops::Add,
-    rc::{Rc, Weak},
+    rc::{Rc, Weak}, borrow::Cow,
 };
 
 use crate::function::{Constant, Function, LvmInstruction};
@@ -768,7 +768,10 @@ impl IrNodeBuilder<'_, '_> {
             table.0.resize(offset + symbols.len(), None);
         }
 
-        for (dst, src) in table.0[offset..(offset + symbols.len())].iter_mut().zip(&symbols) {
+        for (dst, src) in table.0[offset..(offset + symbols.len())]
+            .iter_mut()
+            .zip(&symbols)
+        {
             *dst = Some(src.clone());
         }
 
@@ -947,7 +950,14 @@ impl IrNodeBuilder<'_, '_> {
         inner: usize,
         end: usize,
     ) {
-        let call = self.call(RegConst::Stack(base), base + 1, Some(2), base + 3, nresults, true);
+        let call = self.call(
+            RegConst::Stack(base),
+            base + 1,
+            Some(2),
+            base + 3,
+            nresults,
+            true,
+        );
         self.tail = Tail::TForLoop {
             call,
             index: self.reference_stack(base + 1),
@@ -1007,5 +1017,39 @@ impl IrFunction<'_> {
 
     pub fn add_static(&mut self, id: StackId) {
         self.statics.insert(id);
+    }
+}
+
+impl<'a> dot::Labeller<'a, usize, (usize, usize)> for IrFunction<'_> {
+    fn graph_id(&'a self) -> dot::Id<'a> {
+        dot::Id::new("test").unwrap()
+    }
+
+    fn node_id(&'a self, n: &usize) -> dot::Id<'a> {
+        dot::Id::new(format!("N{}", *n)).unwrap()
+    }
+}
+
+impl<'a> dot::GraphWalk<'a, usize, (usize, usize)> for IrFunction<'a> {
+    fn nodes(&'a self) -> dot::Nodes<'a, usize> {
+        self.nodes.keys().map(|k| *k).collect()
+    }
+
+    fn edges(&'a self) -> dot::Edges<'a, (usize, usize)> {
+        let mut edges = Vec::new();
+        for (&k, n) in self.next.iter() {
+            for &i in n {
+                edges.push((k, i));
+            }
+        }
+        Cow::Owned(edges)
+    }
+
+    fn source(&'a self, edge: &(usize, usize)) -> usize {
+        edge.0
+    }
+
+    fn target(&'a self, edge: &(usize, usize)) -> usize {
+        edge.1
     }
 }

@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
+    fs::File,
     rc::{Rc, Weak},
 };
 
@@ -689,12 +690,7 @@ impl EndFinder<'_> {
             // Check if all bases end at the test node
             let count = bases
                 .iter()
-                .filter(|base| {
-                    self.flow.node_ends_at(
-                        **base,
-                        test,
-                    )
-                })
+                .filter(|&&base| base == test || self.flow.node_ends_at(base, test))
                 .count();
             // check if multiple bases ended at the test node
             if count > 1 {
@@ -721,7 +717,7 @@ impl EndFinder<'_> {
     fn common_end(mut self, bases: &[usize]) -> Option<usize> {
         self.common_ends(bases);
         while self.common.len() > 1 {
-            // self.cache = HashSet::from_
+            // println!("Last ends: {:?}", self.common);
             let bases: Vec<usize> = self.common.drain().collect();
             self.common_ends(&bases);
         }
@@ -919,12 +915,17 @@ impl NodeFlow<'_> {
                 );
                 if !matches!(node.tail, Tail::Jmp(_)) && !matches!(node.tail, Tail::Return(_)) {
                     println!("{:?}", self.tree.next);
-                    self.source.add_control(ControlCode::Goto(self.current));
+
+                    //let mut dfile = File::create("/home/jacob/luarev/test.dot").unwrap();
+                    //dot::render(self.tree, &mut dfile).unwrap();
+
+                    //panic!("Made goto :(");
+                    /*self.source.add_control(ControlCode::Goto(self.current));
                     if self.end_last_flow() {
                         break;
                     } else {
                         continue;
-                    }
+                    }*/
                 }
             }
             self.source.add_node(self.current);
@@ -1045,11 +1046,10 @@ impl NodeFlow<'_> {
                                     Some(end) => end,
                                     _ => {
                                         // In this case, one branch probably returns or continues a loop
-                                        println!("{target_1}, {target_2}");
-                                        //println!("{:#?}", self.tree.next);
                                         self.last_flow_end().unwrap_or(usize::MAX)
                                     }
                                 };
+                                println!("IfElse {target_1}, {target_2}, {end}");
                                 self.flow.push(Flow::IfElse {
                                     a: target_1,
                                     b: target_2,
