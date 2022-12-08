@@ -26,7 +26,7 @@ class OodleLZ_CompressOptions(ctypes.Structure):
 
 
 oodle_dll = ctypes.cdll.LoadLibrary(
-    "D:\\Warframe\\Downloaded\\Public\\Tools\\Oodle\\x64\\final\\oo2core_9_win64.dll")
+    "E:\\Warframe\\Downloaded\\Public\\Tools\\Oodle\\x64\\final\\oo2core_9_win64.dll")
 
 oodleDecompressProto = ctypes.WINFUNCTYPE(
     ctypes.c_int64,  # Return type.
@@ -269,8 +269,8 @@ for e in entries[-20:]:
     print(f"{hex(e[1]): <10} {hex(e[2]): <10} {hex(e[3]): <10} {hex(e[4]): <10} {hex(e[5]): <10} {hex(e[6]): <10}")
 """
 
-#with Extractor("D:\\Warframe\\Downloaded\\Public\\Cache.Windows\\B.Font") as e:
-    #e.extract("B.Font")
+with Extractor("E:\\Warframe\\Downloaded\\Public\\Cache.Windows\\B.Font") as e:
+    e.extract("B.Font")
 
 #with Extractor("D:\\Darmok\\Documents\\Reversing\\wf\\original\\B.Font") as e:
     #e.extract("B.Font")
@@ -278,5 +278,5 @@ for e in entries[-20:]:
 #with Extractor("B.Font") as e:
     #e.extract("B.Font_repacked")
 
-with Packer("B.Font") as p:
-    p.pack("B.Font")
+#with Packer("B.Font") as p:
+#    p.pack("B.Font")

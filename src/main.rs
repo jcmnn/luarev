@@ -11,11 +11,11 @@ mod reader;
 mod symeval;
 
 fn main() {
-    let f = function::load_file("/home/jacob/unluapp/Lotus/Scripts/ContainerDropTable.lua").unwrap();
-    //let f = function::load_file("/home/jacob/luarev/test.luac").unwrap();
+    //let f = function::load_file("/mnt/e/Darmok/Documents/Reversing/wf/B.Font/Lotus/Scripts/ContainerDropTable.lua").unwrap();
+    let f = function::load_file("/home/jacob/luarev/luac.out").unwrap();
 
     {
-        let mut file = File::create("/home/jacob/unluapp/luarev/test.luad").unwrap();
+        let mut file = File::create("/home/jacob/luarev/test.luad").unwrap();
         write!(file, "{}", &f).unwrap();
     }
 
@@ -24,9 +24,13 @@ fn main() {
     // decompile::decompile(root, f.clone()).unwrap();
     let tree = lifter::lift(&f, &mut solver).unwrap();
     solver.minimize(&tree);
+
+    let mut dfile = File::create("/home/jacob/luarev/test.dot").unwrap();
+    dot::render(&tree, &mut dfile).unwrap();
+
     let flow = NodeFlow::generate(&tree, &solver);
     {
-        let mut file = File::create("/home/jacob/unluapp/luarev/test.dec.lua").unwrap();
+        let mut file = File::create("/home/jacob/luarev/test.dec.lua").unwrap();
         write!(file, "{}", flow.source).unwrap();
     }
     // println!("{}", flow.source);

@@ -3,60 +3,63 @@ use int_enum::{IntEnum, IntEnumError};
 
 use crate::reader::LuaReaderExt;
 use std::cell::{Cell, RefCell};
-use std::fmt::{self, Debug};
 use std::fmt::Display;
+use std::fmt::{self, Debug};
 use std::fs::File;
 use std::io::{self, Read, Result as IoResult};
 use std::path::Path;
 use std::rc::Rc;
 
+/// LVM Opcodes
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntEnum)]
 pub enum OpCode {
-    TailCall = 0, /*	A B C	return R(A)(R(A+1), ... ,R(A+B-1))		*/
-    Closure = 1,  /*	A Bx	R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))	*/
-    Eq = 2,       /*	A B C	if ((RK(B) == RK(C)) ~= A) then pc++		*/
-    Div = 3,      /*	A B C	R(A) := RK(B) / RK(C)				*/
-    GetNum = 4,
-    Concat = 5,    /*	A B C	R(A) := R(B).. ... ..R(C)			*/
-    GetTable = 6,  /*	A B C	R(A) := R(B)[RK(C)]				*/
-    SetList = 7,   /*	A B C	R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B	*/
-    LoadK = 8,     /*	A Bx	R(A) := Kst(Bx)					*/
-    SetGlobal = 9, /*	A Bx	Gbl[Kst(Bx)] := R(A)				*/
-    Jmp = 10,      /*	sBx	pc+=sBx					*/
-    TForLoop = 11, /*	A C	R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2));
-                   if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++	*/
-    SetUpval = 12,  /*	A B	UpValue[B] := R(A)				*/
-    Not = 13,       /*	A B	R(A) := not R(B)				*/
-    Vararg = 14,    /*	A B	R(A), R(A+1), ..., R(A+B-1) = vararg		*/
-    GetUpval = 15,  /*	A B	R(A) := UpValue[B]				*/
-    Add = 16,       /*	A B C	R(A) := RK(B) + RK(C)				*/
-    Return = 17,    /*	A B	return R(A), ... ,R(A+B-2)	(see note)	*/
-    GetGlobal = 18, /*	A Bx	R(A) := Gbl[Kst(Bx)]				*/
-    Len = 19,       /*	A B	R(A) := length of R(B)				*/
-    Mul = 20,       /*	A B C	R(A) := RK(B) * RK(C)				*/
-    NewTable = 21,  /*	A B C	R(A) := {} (size = B,C)				*/
-    TestSet = 22,   /*	A B C	if (R(B) <=> C) then R(A) := R(B) else pc++	*/
-    SetTable = 23,  /*	A B C	R(A)[RK(B)] := RK(C)				*/
-    Unm = 24,       /*	A B	R(A) := -R(B)					*/
-    Mod = 25,       /*	A B C	R(A) := RK(B) % RK(C)				*/
-    Lt = 26,        /*	A B C	if ((RK(B) <  RK(C)) ~= A) then pc++  		*/
-    ForLoop = 27,   /*	A sBx	R(A)+=R(A+2);
+    Test = 0x00,      /*	A C	if not (R(A) <=> C) then pc++			*/
+    Close = 0x01,     /*	A 	close all variables in the stack up to (>=) R(A)*/
+    SetTable = 0x02,  /*	A B C	R(A)[RK(B)] := RK(C)				*/
+    TestSet = 0x03,   /*	A B C	if (R(B) <=> C) then R(A) := R(B) else pc++	*/
+    Le = 0x04,        /*	A B C	if ((RK(B) <= RK(C)) ~= A) then pc++  		*/
+    SetGlobal = 0x05, /*	A Bx	Gbl[Kst(Bx)] := R(A)				*/
+    Sub = 0x06,       /*	A B C	R(A) := RK(B) - RK(C)				*/
+    Move = 0x07,      /*	A B	R(A) := R(B)					*/
+    Mod = 0x08,       /*	A B C	R(A) := RK(B) % RK(C)				*/
+    Jmp = 0x09,       /*	sBx	pc+=sBx					*/
+    Eq = 0x0a,        /*	A B C	if ((RK(B) == RK(C)) ~= A) then pc++		*/
+    SetCGlobal = 0x0b,
+    GetUpval = 0x0c,  /*	A B	R(A) := UpValue[B]				*/
+    OpSelf = 0x0d,    /*	A B C	R(A+1) := R(B); R(A) := R(B)[RK(C)]		*/
+    Len = 0x0e,       /*	A B	R(A) := length of R(B)				*/
+    GetGlobal = 0x0f, /*	A Bx	R(A) := Gbl[Kst(Bx)]				*/
+    Closure = 0x10,   /*	A Bx	R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))	*/
+    Pow = 0x11,       /*	A B C	R(A) := RK(B) ^ RK(C)				*/
+    LoadK = 0x12,     /*	A Bx	R(A) := Kst(Bx)					*/
+    GetNum = 0x13,
+    SetUpval = 0x14, /*	A B	UpValue[B] := R(A)				*/
+    ForPrep = 0x15,  /*	A sBx	R(A)-=R(A+2); pc+=sBx				*/
+    Div = 0x16,      /*	A B C	R(A) := RK(B) / RK(C)				*/
+    Vararg = 0x17,   /*	A B	R(A), R(A+1), ..., R(A+B-1) = vararg		*/
+    TForLoop = 0x18, /*	A C	R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2));
+                     if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++	*/
+    TailCall = 0x19, /*	A B C	return R(A)(R(A+1), ... ,R(A+B-1))		*/
+    Mul = 0x1a,      /*	A B C	R(A) := RK(B) * RK(C)				*/
+    LoadNil = 0x1b,  /*	A B	R(A) := ... := R(B) := nil			*/
+    Lt = 0x1c,       /*	A B C	if ((RK(B) <  RK(C)) ~= A) then pc++  		*/
+    GetTable = 0x1d, /*	A B C	R(A) := R(B)[RK(C)]				*/
+    Return = 0x1e,   /*	A B	return R(A), ... ,R(A+B-2)	(see note)	*/
+    Not = 0x1f,      /*	A B	R(A) := not R(B)				*/
+    NewTable = 0x20, /*	A B C	R(A) := {} (size = B,C)				*/
+    LoadBool = 0x21, /*	A B C	R(A) := (Bool)B; if (C) pc++			*/
+    Call = 0x22,     /*	A B C	R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1)) */
+    // 0x23 seems like xor?
+    Unm = 0x23,     /*	A B	R(A) := -R(B)					*/
+    Concat = 0x24,  /*	A B C	R(A) := R(B).. ... ..R(C)			*/
+    SetList = 0x25, /*	A B C	R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B	*/
+    ForLoop = 0x26, /*	A sBx	R(A)+=R(A+2);
                     if R(A) <?= R(A+1) then { pc+=sBx; R(A+3)=R(A) }*/
-    Call = 28,     /*	A B C	R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1)) */
-    Le = 29,       /*	A B C	if ((RK(B) <= RK(C)) ~= A) then pc++  		*/
-    LoadBool = 30, /*	A B C	R(A) := (Bool)B; if (C) pc++			*/
-    ForPrep = 31,  /*	A sBx	R(A)-=R(A+2); pc+=sBx				*/
-    SetCGlobal = 32,
-    Test = 33,    /*	A C	if not (R(A) <=> C) then pc++			*/
-    Pow = 34,     /*	A B C	R(A) := RK(B) ^ RK(C)				*/
-    OpSelf = 35,  /*	A B C	R(A+1) := R(B); R(A) := R(B)[RK(C)]		*/
-    Sub = 36,     /*	A B C	R(A) := RK(B) - RK(C)				*/
-    Move = 37,    /*	A B	R(A) := R(B)					*/
-    Close = 38,   /*	A 	close all variables in the stack up to (>=) R(A)*/
-    LoadNil = 39, /*	A B	R(A) := ... := R(B) := nil			*/
+    Add = 0x27, /*	A B C	R(A) := RK(B) + RK(C)				*/
 }
 
+/// Enum representing a constant ID or Register (stack) ID
 #[derive(Debug)]
 pub enum ConstReg {
     Const(u32),
@@ -248,7 +251,13 @@ impl Display for LvmInstruction {
                 self.argc_rk()
             ),
             OpCode::ForLoop => write!(f, "FORLOOP R{} {}", self.arga(), self.argsbx()),
-            OpCode::Call => write!(f, "CALL R{} {} {}", self.arga(), self.argb() as i32 - 1, self.argc() as i32 - 1),
+            OpCode::Call => write!(
+                f,
+                "CALL R{} {} {}",
+                self.arga(),
+                self.argb() as i32 - 1,
+                self.argc() as i32 - 1
+            ),
             OpCode::Le => write!(
                 f,
                 "LE {} {} {}",
@@ -320,64 +329,6 @@ impl Display for Constant {
             Constant::Boolean(b) => write!(f, "{:#X}", b),
             Constant::Number(n) => write!(f, "{}", n),
             Constant::String(s) => write!(f, "{:?}", s),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Value {
-    Constant(Constant),
-    UpValue,
-    Param,
-    VarArg,
-    Closure(usize),
-    Div(Rc<DValue>, Rc<DValue>),
-    Mod(Rc<DValue>, Rc<DValue>),
-    Add(Rc<DValue>, Rc<DValue>),
-    Sub(Rc<DValue>, Rc<DValue>),
-    Mul(Rc<DValue>, Rc<DValue>),
-    Pow(Rc<DValue>, Rc<DValue>),
-    Number(f32),
-    Concat(Vec<Rc<DValue>>),
-    TableValue(Rc<DValue>, Rc<DValue>),
-    SetTable(Rc<DValue>, Rc<DValue>, Rc<DValue>),
-    ForIndex,
-    NewTable(RefCell<Vec<Option<Rc<DValue>>>>),
-    SetGlobal(Constant, Rc<DValue>),
-    SetCGlobal(Constant, Rc<DValue>),
-    ReturnValue(Rc<DValue>),
-    Call(Rc<DValue>, Vec<Rc<DValue>>, Vec<Rc<DValue>>),
-    SetUpValue(usize, Rc<DValue>),
-    Not(Rc<DValue>),
-    GetGlobal(Constant),
-    Len(Rc<DValue>),
-    Boolean(bool),
-    Unm(Rc<DValue>),
-    Unknown(usize),
-}
-
-#[derive(Debug, Clone)]
-pub enum Name {
-    None,
-    Local(String),
-    UpValue(String),
-    Parameter(String),
-}
-
-#[derive(Debug)]
-pub struct DValue {
-    pub value: Value,
-    //pub instruction_offset: u32,
-    pub name: RefCell<Name>,
-    pub refcount: Cell<usize>,
-}
-
-impl DValue {
-    pub fn new(value: Value) -> DValue {
-        DValue {
-            value,
-            name: RefCell::new(Name::None),
-            refcount: Cell::new(0),
         }
     }
 }
@@ -502,7 +453,6 @@ impl Display for Function {
         for (i, c) in self.closures.iter().enumerate() {
             writeln!(f, "-- Closure {}\n{}\n", i, c)?;
         }
-
 
         Ok(())
     }
